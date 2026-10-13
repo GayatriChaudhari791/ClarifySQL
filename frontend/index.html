@@ -1,168 +1,23 @@
-```html
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#F7F6F2" />
-  <meta name="description" content="ClarifySQL transforms natural-language questions into SQL queries and clear data insights." />
-  <title>ClarifySQL — Ask your data</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#F7F8F5">
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500;1,600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <meta name="description"
+    content="ClarifySQL helps you turn natural-language questions into SQL and understand your data more easily.">
 
-  <style>
-    /* Stronger, more professional ClarifySQL branding */
-    :root {
-      --sans: "Manrope", "DM Sans", Arial, sans-serif;
-      --forest: #174B35;
-    }
+  <title>ClarifySQL — Less query writing. More discovering.</title>
 
-    .brand {
-      gap: 12px;
-      font-family: "Manrope", sans-serif;
-      font-size: 25px;
-      font-weight: 800;
-      letter-spacing: -1.15px;
-    }
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 
-    .brand-mark {
-      width: 42px;
-      height: 42px;
-      border-radius: 12px;
-      font-family: "Manrope", sans-serif;
-      font-size: 25px;
-      font-weight: 800;
-      letter-spacing: -1.5px;
-      box-shadow: 0 5px 12px rgba(23, 75, 53, 0.15);
-    }
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
 
-    .brand-light {
-      color: var(--forest);
-      font-weight: 500;
-    }
-
-    .hero h1 {
-      font-family: "Manrope", sans-serif;
-      font-weight: 700;
-      letter-spacing: -3.2px;
-      line-height: 1.08;
-    }
-
-    .hero h1 em {
-      font-family: "Playfair Display", Georgia, serif;
-      font-weight: 500;
-      letter-spacing: -2px;
-    }
-
-    .section-heading h2,
-    .how-copy h2,
-    .closing h2 {
-      font-family: "Manrope", sans-serif;
-      font-weight: 700;
-      letter-spacing: -2px;
-    }
-
-    .section-heading h2 em,
-    .how-copy h2 em,
-    .closing h2 em {
-      font-family: "Playfair Display", Georgia, serif;
-      font-weight: 500;
-    }
-
-    .preview-logo {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      margin-left: 3px;
-      font-family: "Manrope", sans-serif;
-      font-size: 14px;
-      font-weight: 800;
-      letter-spacing: -0.7px;
-    }
-
-    .preview-logo .preview-mark {
-      display: inline-grid;
-      place-items: center;
-      width: 23px;
-      height: 23px;
-      border-radius: 7px;
-      background: var(--forest);
-      color: white;
-      font-size: 14px;
-      letter-spacing: -1px;
-    }
-
-    .preview-logo .preview-sql {
-      font-size: 10px;
-      font-weight: 600;
-      color: #667269;
-      letter-spacing: -0.3px;
-    }
-
-    .query-icon,
-    .floating-icon {
-      display: inline-grid;
-      place-items: center;
-      font-family: "Manrope", sans-serif;
-      font-weight: 800;
-    }
-
-    .query-icon {
-      width: 21px;
-      height: 21px;
-      border-radius: 6px;
-      background: #E9EAE2;
-      color: var(--forest);
-      font-size: 13px;
-    }
-
-    .floating-icon {
-      font-size: 17px;
-    }
-
-    .query-submit {
-      font-family: "Manrope", sans-serif;
-    }
-
-    .site-header > a.button {
-      display: none;
-    }
-
-    .hero-actions .button {
-      min-height: 49px;
-      font-size: 12px;
-    }
-
-    .button-dark {
-      background: var(--forest);
-    }
-
-    .button-dark:focus-visible,
-    .button-outline:focus-visible,
-    a:focus-visible {
-      outline: 3px solid #9CB9A4;
-      outline-offset: 4px;
-    }
-
-    @media (max-width: 760px) {
-      .brand {
-        font-size: 22px;
-      }
-
-      .brand-mark {
-        width: 38px;
-        height: 38px;
-        font-size: 23px;
-      }
-
-      .hero h1 {
-        letter-spacing: -2.2px;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
@@ -173,249 +28,157 @@
     </a>
 
     <nav class="nav-links" aria-label="Main navigation">
-      <a href="#platform">Platform</a>
-      <a href="#features">Features</a>
-      <a href="#how-it-works">How it works</a>
+      <a class="nav-active" href="#features">Features</a>
+      <a class="button button-outline" href="chatbot.html">
+  See how it works
+</a>
+      <a href="#results">Use cases</a>
+      <a href="#faq">FAQ</a>
     </nav>
   </header>
 
   <main id="home">
-    <section class="hero section-wrap">
-      <div class="hero-copy">
-        <div class="eyebrow">
-          <span class="status-dot"></span>
-          AI-POWERED DATA ANALYTICS
-        </div>
-
-        <h1>
-          Your data has answers.<br />
-          <em>Just ask.</em>
-        </h1>
-
-        <p class="hero-description">
-          Turn everyday questions into SQL queries and meaningful insights.
-          Spend less time writing queries and more time understanding your data.
-        </p>
-
-        <div class="hero-actions">
-          <a class="button button-dark" href="#platform">
-            Explore ClarifySQL <span aria-hidden="true">↗</span>
-          </a>
-          <a class="button button-outline" href="#how-it-works">
-            See how it works
-          </a>
-        </div>
-
-        <div class="hero-note">
-          <span class="mini-check" aria-hidden="true">✓</span>
-          Natural language. Clear queries. Better decisions.
-        </div>
-      </div>
-
-      <div class="hero-visual" id="platform">
-        <div class="visual-topline">
-          <span>CLARIFYSQL / WORKSPACE PREVIEW</span>
-          <span class="live-indicator"><i></i> CONCEPT PREVIEW</span>
-        </div>
-
-        <div class="preview-window">
-          <aside class="preview-sidebar">
-            <div class="preview-logo">
-              <span class="preview-mark" aria-hidden="true">C</span>
-              <span>Clarify<span class="preview-sql">SQL</span></span>
-            </div>
-
-            <div class="side-item active">
-              <span aria-hidden="true">⌂</span> Overview
-            </div>
-            <div class="side-item">
-              <span aria-hidden="true">⌕</span> Ask AI
-            </div>
-            <div class="side-item">
-              <span aria-hidden="true">▤</span> Query history
-            </div>
-            <div class="side-item">
-              <span aria-hidden="true">▥</span> Data sources
-            </div>
-
-            <div class="sidebar-bottom">YOUR DATA, MADE CLEAR.</div>
-          </aside>
-
-          <div class="preview-main">
-            <div class="preview-heading">
-              <div>
-                <span class="overline">YOUR WORKSPACE</span>
-                <h2>Good morning.</h2>
-              </div>
-              <div class="avatar" aria-label="ClarifySQL">C</div>
-            </div>
-
-            <div class="query-card">
-              <div class="query-label">
-                <span class="query-icon" aria-hidden="true">C</span>
-                ASK YOUR DATA
-              </div>
-              <p>Which products generate the most revenue?</p>
-              <div class="query-footer">
-                <span>Ask in plain English</span>
-                <span class="query-submit" aria-hidden="true">↗</span>
-              </div>
-            </div>
-
-            <div class="sql-card">
-              <div class="sql-heading">
-                <span>GENERATED SQL</span>
-                <span class="sql-status">ILLUSTRATIVE</span>
-              </div>
-              <code><span class="sql-keyword">SELECT</span> product, <span class="sql-function">SUM</span>(revenue)<br />
-                <span class="sql-keyword">FROM</span> sales<br />
-                <span class="sql-keyword">GROUP BY</span> product<br />
-                <span class="sql-keyword">ORDER BY</span> <span class="sql-function">SUM</span>(revenue) <span class="sql-keyword">DESC</span>;</code>
-            </div>
-
-            <div class="result-strip">
-              <div class="result-symbol" aria-hidden="true">C</div>
-              <div>
-                <strong>From question to query.</strong>
-                <span>A clearer way to explore data.</span>
-              </div>
-              <span class="result-arrow" aria-hidden="true">→</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="floating-note">
-          <span class="floating-icon" aria-hidden="true">C</span>
-          <div>
-            <strong>Clarity starts with a question.</strong>
-            <span>Your data, easier to explore.</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="trust-strip">
-      <div class="section-wrap trust-inner">
-        <span>BUILT FOR CURIOUS MINDS</span>
-        <p>Ask naturally <b>·</b> Query intelligently <b>·</b> Understand clearly</p>
-      </div>
-    </section>
-
-    <section class="features section-wrap" id="features">
-      <div class="section-heading">
+    <section class="landing">
+      <div class="hero-heading">
         <div class="eyebrow">
           <span class="status-dot"></span>
           A SIMPLER WAY TO ANALYZE
         </div>
-        <h2>Less query writing.<br /><em>More discovering.</em></h2>
-        <p>
+
+        <h1>
+          Less query writing.<br>
+          <span>More discovering.</span>
+        </h1>
+
+        <p class="hero-description">
           Bring your questions. ClarifySQL helps bridge the gap between
           the way you think and the way databases work.
         </p>
       </div>
 
-      <div class="feature-grid">
-        <article class="feature-card">
+      <section class="feature-grid" id="features"
+        aria-label="ClarifySQL features">
+
+        <article class="feature-card" id="plain-language">
           <span class="feature-number">01</span>
-          <div class="feature-icon" aria-hidden="true">C</div>
-          <h3>Ask in plain language</h3>
+
+          <div class="feature-icon chat-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <path d="M24 7C13.5 7 6 14 6 23c0 4.1 1.7 7.7 4.6 10.4L9 41l9-3.6c2 .7 4 .9 6 .9 10.5 0 18-6.8 18-15.3S34.5 7 24 7Z"
+                stroke="currentColor" stroke-width="3.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="16" cy="23" r="2" fill="currentColor"/>
+              <circle cx="24" cy="23" r="2" fill="currentColor"/>
+              <circle cx="32" cy="23" r="2" fill="currentColor"/>
+            </svg>
+          </div>
+
+          <h2>Ask in plain language</h2>
+
           <p>
             Describe what you want to know without having to write SQL
             from scratch.
           </p>
-          <span class="feature-link">Natural language interface <span>↗</span></span>
+
+          <div class="feature-link">
+            <span>Natural language interface</span>
+          </div>
+
+          <div class="card-decoration chat-decoration" aria-hidden="true">
+            <span></span><span></span>
+          </div>
         </article>
 
         <article class="feature-card feature-card-dark">
           <span class="feature-number">02</span>
-          <div class="feature-icon" aria-hidden="true">SQL</div>
-          <h3>Understand the SQL</h3>
+
+          <div class="feature-icon database-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <ellipse cx="24" cy="10" rx="15" ry="6"
+                stroke="currentColor" stroke-width="3"/>
+              <path d="M9 10v27c0 3.3 6.7 6 15 6s15-2.7 15-6V10"
+                stroke="currentColor" stroke-width="3"/>
+              <path d="M9 19c0 3.3 6.7 6 15 6s15-2.7 15-6M9 28c0 3.3 6.7 6 15 6s15-2.7 15-6"
+                stroke="currentColor" stroke-width="3"/>
+            </svg>
+          </div>
+
+          <h2>Understand the SQL</h2>
+
           <p>
             Inspect the generated query and see how your question
             translates into database logic.
           </p>
-          <span class="feature-link">Transparent query generation <span>↗</span></span>
+
+          <div class="feature-link">
+            <span>Transparent query generation</span>
+          </div>
+
+          <div class="code-decoration" aria-hidden="true">
+            <div class="code-window">
+              <div class="code-window-top">
+                <span></span><span></span><span></span>
+              </div>
+              <div class="code-window-body">&lt;/&gt;</div>
+            </div>
+            <span class="sparkle">✦</span>
+          </div>
         </article>
 
-        <article class="feature-card">
+        <article class="feature-card" id="results">
           <span class="feature-number">03</span>
-          <div class="feature-icon" aria-hidden="true">↗</div>
-          <h3>Explore the results</h3>
+
+          <div class="feature-icon chart-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="currentColor">
+              <rect x="7" y="26" width="9" height="16" rx="2"/>
+              <rect x="20" y="16" width="9" height="26" rx="2"/>
+              <rect x="33" y="6" width="9" height="36" rx="2"/>
+            </svg>
+          </div>
+
+          <h2>Explore the results</h2>
+
           <p>
             Work toward a clearer view of your data with structured
             results and useful visualizations.
           </p>
-          <span class="feature-link">Data-driven exploration <span>↗</span></span>
+
+          <div class="feature-link">
+            <span>Data-driven exploration</span>
+          </div>
+
+          <div class="chart-decoration" aria-hidden="true">
+            <svg viewBox="0 0 120 100" fill="none">
+              <path d="M8 79C31 75 54 64 73 43L100 17"
+                stroke="#86C9A2" stroke-width="2.5"
+                stroke-linecap="round"/>
+              <path d="M86 17h14v14"
+                stroke="#86C9A2" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="18" y="67" width="15" height="24" rx="4"
+                fill="#D8EDE0"/>
+              <rect x="42" y="52" width="15" height="39" rx="4"
+                fill="#C4E5D1"/>
+              <rect x="66" y="35" width="15" height="56" rx="4"
+                fill="#A9D9BC"/>
+              <rect x="90" y="25" width="15" height="66" rx="4"
+                fill="#91CEAA"/>
+            </svg>
+          </div>
         </article>
-      </div>
-
-      <p class="feature-disclaimer">
-        Feature descriptions represent the product direction; functionality
-        is being developed and tested.
-      </p>
-    </section>
-
-    <section class="how-section" id="how-it-works">
-      <div class="section-wrap how-inner">
-        <div class="how-copy">
-          <div class="eyebrow">
-            <span class="status-dot"></span>
-            HOW IT WORKS
-          </div>
-          <h2>From a question<br />to <em>clarity.</em></h2>
-          <p>
-            A straightforward workflow designed to make data exploration
-            more approachable.
-          </p>
-        </div>
-
-        <div class="steps">
-          <div class="step">
-            <span class="step-number">01</span>
-            <div>
-              <h3>Ask a question</h3>
-              <p>Describe the insight you are looking for in everyday language.</p>
-            </div>
-          </div>
-
-          <div class="step">
-            <span class="step-number">02</span>
-            <div>
-              <h3>Generate a query</h3>
-              <p>Use an AI-assisted workflow to translate the question into SQL.</p>
-            </div>
-          </div>
-
-          <div class="step">
-            <span class="step-number">03</span>
-            <div>
-              <h3>Review the results</h3>
-              <p>Inspect the query and explore the returned data.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="closing section-wrap">
-      <div>
-        <span class="closing-kicker">A CLEARER WAY TO WORK WITH DATA</span>
-        <h2>Curiosity is a good<br /><em>place to start.</em></h2>
-      </div>
-      <a class="button button-light" href="#platform">
-        Explore the workspace <span aria-hidden="true">↗</span>
-      </a>
+      </section>
     </section>
   </main>
 
   <footer class="site-footer">
-    <a class="brand footer-brand" href="#home" aria-label="ClarifySQL home">
-      <span class="brand-mark" aria-hidden="true">C</span>
-      <span>Clarify<span class="brand-light">SQL</span></span>
-    </a>
     <p>Making data easier to understand.</p>
-    <span class="footer-copy">© 2026 ClarifySQL · A project in development</span>
+    <span>© 2026 ClarifySQL. A project in development.</span>
   </footer>
+
+  <section class="visually-hidden" id="faq" aria-label="Frequently asked questions">
+    <h2>Frequently asked questions</h2>
+    <p>ClarifySQL is a project in development that aims to help users
+      explore data through natural-language questions and SQL.</p>
+  </section>
 </body>
 </html>
-```

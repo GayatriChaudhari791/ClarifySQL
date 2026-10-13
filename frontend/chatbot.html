@@ -1,0 +1,219 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClarifySQL | Data Analytics</title>
+  <link rel="stylesheet" href="chatbot.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="../index.html">
+        <span class="brand-mark">C</span>
+        <span class="brand-name">Clarify<span>SQL</span></span>
+      </a>
+
+      <button id="newChatButton" class="new-chat-button" type="button">
+        <span>＋</span> New conversation
+      </button>
+
+      <div class="sidebar-section">
+        <p class="sidebar-label">WORKSPACE</p>
+        <div class="workspace-item active">
+          <span>▦</span> Data analysis
+        </div>
+      </div>
+
+      <div class="sidebar-section history-section">
+        <p class="sidebar-label">RECENT QUERIES</p>
+        <div id="historyList" class="history-list">
+          <p class="empty-history">Your queries will appear here.</p>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span>AI analytics workspace</span>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">YOUR PERSONAL DATA ASSISTANT</p>
+          <h1>Data workspace</h1>
+        </div>
+        <div class="topbar-status">
+          <span class="status-dot"></span>
+          Ready to explore
+        </div>
+      </header>
+
+      <section class="conversation-area" id="conversationArea">
+
+        <!-- Welcome screen -->
+        <div id="welcome" class="welcome">
+          <div class="welcome-icon">C</div>
+          <p class="eyebrow">WELCOME TO CLARIFYSQL</p>
+          <h2>Let's make sense<br>of <span>your data.</span></h2>
+
+          <p class="welcome-description">
+            Upload your dataset and ask questions in plain English.
+            We'll help you turn your questions into SQL and useful insights.
+          </p>
+        </div>
+
+        <!-- Conversation messages -->
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <!-- Uploaded dataset and preview -->
+        <section id="datasetPanel" class="dataset-panel" hidden>
+          <div class="dataset-heading">
+            <div>
+              <p class="eyebrow">CURRENT DATASET</p>
+              <h3 id="datasetTitle">Uploaded dataset</h3>
+            </div>
+
+            <button id="changeFileButton" class="text-button" type="button">
+              Change file
+            </button>
+          </div>
+
+          <div id="datasetMeta" class="dataset-meta"></div>
+          <div id="previewWrap" class="preview-wrap"></div>
+        </section>
+
+        <!-- Upload and question form.
+             This is outside the welcome section so it stays available
+             after the welcome screen is hidden. -->
+        <form id="uploadForm" class="upload-form">
+          <input
+            id="fileInput"
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            hidden
+          >
+
+          <button id="uploadZone" class="upload-zone" type="button">
+            <span class="upload-icon">↑</span>
+
+            <span class="upload-copy">
+              <strong>Upload your dataset</strong>
+              <span>Choose a CSV or Excel file from your computer</span>
+            </span>
+
+            <span class="browse-label">Browse files</span>
+          </button>
+
+          <div id="selectedFile" class="selected-file" hidden>
+            <span class="file-icon">▤</span>
+
+            <div class="selected-file-info">
+              <strong id="fileName">dataset.csv</strong>
+              <span id="fileSize">Ready to upload</span>
+            </div>
+
+            <button
+              id="removeFileButton"
+              class="icon-button"
+              type="button"
+              aria-label="Remove selected file"
+            >×</button>
+          </div>
+
+          <label class="question-label" for="questionInput">
+            What would you like to discover from your data?
+            <span>(optional before upload)</span>
+          </label>
+
+          <div class="question-box">
+            <textarea
+              id="questionInput"
+              rows="2"
+              placeholder="Ask a question about your dataset in plain English..."
+              aria-label="Ask a question about your dataset"
+            ></textarea>
+
+            <div class="question-box-footer">
+              <span id="questionHint">
+                Upload a dataset to begin your analysis.
+              </span>
+
+              <button id="sendButton" class="send-button" type="submit">
+                <span id="sendButtonText">Continue</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </div>
+
+          <p id="uploadMessage" class="form-message" role="status"></p>
+
+          <p class="privacy-note">
+            CSV and Excel files · Ask questions in plain English
+          </p>
+        </form>
+
+        <!-- SQL query, results and chart -->
+        <section id="responseDetails" class="response-details" hidden>
+
+          <div class="result-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">GENERATED QUERY</p>
+                <h3>SQL query</h3>
+              </div>
+
+              <span id="sqlStatus" class="status-pill">WAITING</span>
+            </div>
+
+            <pre class="sql-container"><code id="sqlOutput">Your SQL query will appear here.</code></pre>
+
+            <button id="copySQLButton" class="text-button" type="button">
+              Copy SQL
+            </button>
+          </div>
+
+          <div class="result-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">QUERY OUTPUT</p>
+                <h3>Results</h3>
+              </div>
+
+              <span id="resultCount" class="result-count"></span>
+            </div>
+
+            <div id="resultsOutput" class="results-output">
+              <p class="muted-text">
+                Results will appear here after a query runs.
+              </p>
+            </div>
+          </div>
+
+          <div id="chartSection" class="result-section" hidden>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">VISUAL SUMMARY</p>
+                <h3>Chart</h3>
+              </div>
+            </div>
+
+            <div id="chartOutput" class="chart-output"></div>
+          </div>
+
+        </section>
+      </section>
+
+      <footer class="main-footer">
+        <span>ClarifySQL</span>
+        <span>Ask questions. Understand your data.</span>
+      </footer>
+    </main>
+  </div>
+
+<script src="./chatbot.js" defer></script>
+</body>
+</html>
+```
