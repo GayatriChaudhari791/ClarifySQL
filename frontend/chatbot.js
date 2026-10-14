@@ -871,10 +871,14 @@ uploadZone.addEventListener("drop", event => {
 
 console.log("ClarifySQL: submit handler attached");
 
-uploadForm.addEventListener("submit", handleSubmission);
+uploadForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    console.log("FORM SUBMIT EVENT FIRED");
+    handleSubmission(event);
+});
 
 // Enter submits the question; Shift+Enter inserts a new line.
-questionInput.addEventListener("keydown", event => {
+questionInput.addEventListener("keydown", (event) => {
     if (
         event.key === "Enter" &&
         !event.shiftKey &&

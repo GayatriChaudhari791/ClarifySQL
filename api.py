@@ -192,9 +192,9 @@ def get_schema(frame: pd.DataFrame) -> str:
 
 def generate_sql(question: str, schema: str) -> str:
     prompt = f"""
-You are ClarifySQL, a careful natural-language-to-SQL assistant.
+You are ClarifySQL, an expert natural-language-to-SQL assistant.
 
-Convert the user's question into exactly one SQLite SELECT query.
+Convert the user's question into exactly one valid SQLite SELECT query.
 
 DATASET SCHEMA:
 {schema}
@@ -208,10 +208,66 @@ RULES:
 - Generate one read-only SELECT statement only.
 - Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA,
   ATTACH, DETACH, REPLACE, or multiple statements.
-- Do not invent columns, tables, values, or relationships.
-- If the question cannot be answered using this dataset, return INVALID.
-- For requests for a top number of records, use ORDER BY and LIMIT.
+- Never invent columns, tables, values, or relationships.
+- Return INVALID only if the question genuinely cannot be answered
+  using the available columns.
+- Do not return INVALID merely because a question requires calculations,
+  aggregation, grouping, sorting, filtering, or percentages.
+- For requests involving percentages, calculate the percentage as
+  (numerator * 100.0 / denominator).
+- Use a subquery to calculate the total when the denominator requires
+  the total number of rows in the dataset.
+- Use GROUP BY when the user asks for results by category.
+- Use COUNT(*) when counting rows.
+- Use COUNT(DISTINCT column) when counting unique values.
+- Use SUM, AVG, MIN, and MAX when appropriate for the available data.
+- For top-N questions, use ORDER BY and LIMIT.
 - Do not use SELECT * unless the user explicitly asks to see all columns.
+- If the user asks a question about a column that does not exist,
+  return INVALID.
+- For questions asking for the percentage distribution across states,
+  cities, or another available categorical column, calculate the count
+  for each category and divide it by the total number of rows.
+- Do not assume that a question is impossible merely because it requires
+  more than one SQL operation.
+
+EXAMPLES:
+
+Question: What percentage of sellers belong to each state?
+SQL:
+SELECT
+    "seller_state",
+    COUNT(*) AS seller_count,
+    ROUND(
+        COUNT(*) * 100.0 /
+        (SELECT COUNT(*) FROM "uploaded_data"),
+        2
+    ) AS percentage
+FROM "uploaded_data"
+GROUP BY "seller_state"
+ORDER BY percentage DESC
+
+Question: Which state has the most sellers?
+SQL:
+SELECT
+    "seller_state",
+    COUNT(*) AS seller_count
+FROM "uploaded_data"
+GROUP BY "seller_state"
+ORDER BY seller_count DESC
+LIMIT 1
+
+Question: What is the average postal code prefix?
+SQL:
+SELECT AVG("seller_zip_code_prefix") AS average_zip_code_prefix
+FROM "uploaded_data"
+
+Question: What is the total revenue?
+SQL:
+INVALID
+
+The final example must return INVALID when the schema contains no
+revenue column or other information from which revenue can be calculated.
 
 USER QUESTION:
 {question}
@@ -222,15 +278,14 @@ Return only the SQL query or INVALID.
     answer = call_ollama(prompt)
 
     answer = re.sub(
-        r"\A```(?:sql)?\s*",
+        r"\\A```(?:sql)?\\s*",
         "",
         answer,
         flags=re.IGNORECASE,
     )
-    answer = re.sub(r"\s*```\s*\Z", "", answer).strip()
+    answer = re.sub(r"\\s*```\\s*\\Z", "", answer).strip()
 
     return answer
-
 
 def validate_sql(query: str) -> str:
     query = query.strip()
