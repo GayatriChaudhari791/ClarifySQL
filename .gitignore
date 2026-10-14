@@ -27,3 +27,6 @@ Thumbs.db
 *.db-shm
 *.sqlite-wal
 *.sqlite-shm
+
+# Uploaded datasets
+uploaded_data/
