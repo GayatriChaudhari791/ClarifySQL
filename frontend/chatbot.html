@@ -6,6 +6,58 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClarifySQL | Data Analytics</title>
   <link rel="stylesheet" href="chatbot.css">
+  <script>
+    // Prevent external live-reload watchers (like VS Code Live Server) from resetting active sessions
+    (function () {
+      const NativeWebSocket = window.WebSocket;
+      if (!NativeWebSocket) return;
+      window.WebSocket = function (url, protocols) {
+        const ws = protocols ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+        if (typeof url === "string" && (url.endsWith("/ws") || url.includes(":5500"))) {
+          return new Proxy(ws, {
+            set(target, prop, value) {
+              if (prop === "onmessage" && typeof value === "function") {
+                target.onmessage = function (event) {
+                  if (event && event.data === "reload") {
+                    console.warn("[ClarifySQL] Live Server reload prevented to protect active dataset session.");
+                    return;
+                  }
+                  return value.call(this, event);
+                };
+                return true;
+              }
+              target[prop] = value;
+              return true;
+            },
+            get(target, prop) {
+              if (prop === "addEventListener") {
+                return function (type, listener, options) {
+                  if (type === "message" && typeof listener === "function") {
+                    const wrapped = function (event) {
+                      if (event && event.data === "reload") {
+                        console.warn("[ClarifySQL] Live Server reload prevented to protect active dataset session.");
+                        return;
+                      }
+                      return listener.call(this, event);
+                    };
+                    return target.addEventListener(type, wrapped, options);
+                  }
+                  return target.addEventListener(type, listener, options);
+                };
+              }
+              const val = target[prop];
+              if (typeof val === "function") {
+                return val.bind(target);
+              }
+              return val;
+            }
+          });
+        }
+        return ws;
+      };
+      window.WebSocket.prototype = NativeWebSocket.prototype;
+    })();
+  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -88,7 +140,7 @@
         <!-- Upload and question form.
              This is outside the welcome section so it stays available
              after the welcome screen is hidden. -->
-        <form id="uploadForm" class="upload-form">
+        <form id="uploadForm" class="upload-form" onsubmit="return false;">
           <input
             id="fileInput"
             type="file"
@@ -141,7 +193,7 @@
                 Upload a dataset to begin your analysis.
               </span>
 
-              <button id="sendButton" class="send-button" type="submit">
+              <button id="sendButton" class="send-button" type="button">
                 <span id="sendButtonText">Continue</span>
                 <span aria-hidden="true">↗</span>
               </button>

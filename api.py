@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 
@@ -22,6 +23,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+if FRONTEND_DIR.is_dir():
+    app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL_NAME = "qwen2.5:3b"
@@ -222,7 +227,7 @@ RULES:
 - Use COUNT(DISTINCT column) when counting unique values.
 - Use SUM, AVG, MIN, and MAX when appropriate for the available data.
 - For top-N questions, use ORDER BY and LIMIT.
-- Do not use SELECT * unless the user explicitly asks to see all columns.
+- For general requests to inspect, preview, or show rows or records, SELECT * is allowed with LIMIT.
 - If the user asks a question about a column that does not exist,
   return INVALID.
 - For questions asking for the percentage distribution across states,
@@ -232,6 +237,10 @@ RULES:
   more than one SQL operation.
 
 EXAMPLES:
+
+Question: Show me the first 5 rows
+SQL:
+SELECT * FROM "uploaded_data" LIMIT 5
 
 Question: What percentage of sellers belong to each state?
 SQL:
@@ -278,12 +287,13 @@ Return only the SQL query or INVALID.
     answer = call_ollama(prompt)
 
     answer = re.sub(
-        r"\\A```(?:sql)?\\s*",
+        r"^\s*```(?:sql)?\s*",
         "",
         answer,
-        flags=re.IGNORECASE,
+        flags=re.IGNORECASE | re.MULTILINE,
     )
-    answer = re.sub(r"\\s*```\\s*\\Z", "", answer).strip()
+    answer = re.sub(r"\s*```\s*$", "", answer, flags=re.MULTILINE).strip()
+    answer = re.sub(r"^\s*SQL:\s*", "", answer, flags=re.IGNORECASE).strip()
 
     return answer
 
@@ -474,6 +484,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 @app.post("/query")
 def query_dataset(request: QueryRequest):
     question = request.question.strip()
+    print(f"QUERY RECEIVED: {question!r} on dataset {request.dataset_id!r}")
 
     if not question:
         raise HTTPException(status_code=400, detail="Please enter a question.")
@@ -522,14 +533,14 @@ def query_dataset(request: QueryRequest):
         )
 
     except RuntimeError as error:
+        print(f"QUERY RUNTIME ERROR: {error}")
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
+        print(f"QUERY VALUE ERROR: {error} | Generated SQL: {locals().get('generated_sql')!r}")
         raise HTTPException(status_code=422, detail=str(error)) from error
     except sqlite3.Error as error:
-        raise HTTPException(
-            status_code=422,
-            detail=f"The generated query could not be executed: {error}",
-        ) from error
+        print(f"QUERY SQLITE ERROR: {error}")
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
     return {
         "dataset_id": request.dataset_id,

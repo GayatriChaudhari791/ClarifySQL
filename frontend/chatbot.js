@@ -349,6 +349,14 @@ async function uploadDataset(file) {
 
     currentDatasetId = data.dataset_id;
 
+    try {
+        sessionStorage.setItem("clarify_dataset_id", currentDatasetId);
+        sessionStorage.setItem("clarify_dataset_name", file.name);
+        sessionStorage.setItem("clarify_dataset_data", JSON.stringify(data));
+    } catch {
+        // Ignore storage errors
+    }
+
     renderDatasetPreview(data, file.name);
 
     return data;
@@ -712,7 +720,7 @@ async function askQuestion(question) {
     } catch (error) {
         loadingMessage.remove();
 
-        console.error("ClarifySQL query failed:", error);
+        console.error("ClarifySQL query failed:", error.message || error);
 
         addMessage(
             "assistant",
@@ -737,7 +745,9 @@ async function askQuestion(question) {
 // ============================================
 
 async function handleSubmission(event) {
-    event.preventDefault();
+    if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+    }
 
     if (isLoading) return;
 
@@ -751,15 +761,12 @@ async function handleSubmission(event) {
         return;
     }
 
-    setLoading(
-        true,
-        selectedDatasetFile ? "Uploading..." : "Analyzing..."
-    );
-
     showFormMessage("", false);
 
-    try {
-        if (selectedDatasetFile) {
+    if (selectedDatasetFile) {
+        setLoading(true, "Uploading...");
+
+        try {
             const fileToUpload = selectedDatasetFile;
 
             const data = await uploadDataset(fileToUpload);
@@ -779,40 +786,47 @@ async function handleSubmission(event) {
                 "assistant",
                 `Your dataset "${data.filename || currentDatasetName}" is ready.`
             );
-        }
 
-        if (question) {
+            if (question) {
+                setLoading(false);
+                await askQuestion(question);
+                return;
+            }
+
             setLoading(false);
 
-            await askQuestion(question);
+            addMessage(
+                "assistant",
+                "What do you want to know about this data?"
+            );
 
+            questionInput.placeholder =
+                "What do you want to know about this data?";
+
+            questionInput.focus();
+        } catch (error) {
+            console.error("ClarifySQL upload failed:", error);
+
+            showFormMessage(
+                error instanceof TypeError
+                    ? "Could not connect to the Python backend. The upload API needs to be running."
+                    : error.message ||
+                      "The file could not be uploaded."
+            );
+        } finally {
+            setLoading(false);
+        }
+        return;
+    }
+
+    if (currentDatasetId) {
+        if (!question) {
+            showFormMessage("Please enter a question about your dataset.");
+            questionInput.focus();
             return;
         }
 
-        setLoading(false);
-
-        showConversation();
-
-        addMessage(
-            "assistant",
-            "What do you want to know about this data?"
-        );
-
-        questionInput.placeholder =
-            "What do you want to know about this data?";
-
-        questionInput.focus();
-    } catch (error) {
-        console.error("ClarifySQL upload failed:", error);
-
-        showFormMessage(
-            error instanceof TypeError
-                ? "Could not connect to the Python backend. The upload API needs to be running."
-                : error.message ||
-                  "The file could not be uploaded."
-        );
-    } finally {
-        setLoading(false);
+        await askQuestion(question);
     }
 }
 
@@ -866,14 +880,18 @@ uploadZone.addEventListener("drop", event => {
 });
 
 // ============================================
-// 18. Connect form submission
+// 18. Connect submission handlers
 // ============================================
 
 console.log("ClarifySQL: submit handler attached");
 
 uploadForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    console.log("FORM SUBMIT EVENT FIRED");
+    handleSubmission(event);
+});
+
+sendButton.addEventListener("click", (event) => {
+    event.preventDefault();
     handleSubmission(event);
 });
 
@@ -885,12 +903,7 @@ questionInput.addEventListener("keydown", (event) => {
         !event.isComposing
     ) {
         event.preventDefault();
-
-        if (typeof uploadForm.requestSubmit === "function") {
-            uploadForm.requestSubmit();
-        } else {
-            handleSubmission(event);
-        }
+        handleSubmission(event);
     }
 });
 
@@ -951,6 +964,14 @@ newChatButton.addEventListener("click", () => {
     currentDatasetId = null;
     currentDatasetName = "";
 
+    try {
+        sessionStorage.removeItem("clarify_dataset_id");
+        sessionStorage.removeItem("clarify_dataset_name");
+        sessionStorage.removeItem("clarify_dataset_data");
+    } catch {
+        // Ignore
+    }
+
     questionInput.value = "";
 
     questionInput.placeholder =
@@ -973,5 +994,23 @@ newChatButton.addEventListener("click", () => {
 
 renderHistory();
 resetResults();
+
+try {
+    const savedId = sessionStorage.getItem("clarify_dataset_id");
+    const savedName = sessionStorage.getItem("clarify_dataset_name");
+    const savedData = sessionStorage.getItem("clarify_dataset_data");
+    if (savedId && savedData) {
+        currentDatasetId = savedId;
+        currentDatasetName = savedName || "Uploaded dataset";
+        renderDatasetPreview(JSON.parse(savedData), currentDatasetName);
+        showConversation();
+        addMessage(
+            "assistant",
+            `Dataset "${currentDatasetName}" is ready. What do you want to know about this data?`
+        );
+    }
+} catch {
+    // Ignore restore error
+}
 
 console.log("ClarifySQL frontend initialized.");              
