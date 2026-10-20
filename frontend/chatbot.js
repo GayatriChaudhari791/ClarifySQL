@@ -7,6 +7,7 @@
 const API_BASE = "http://127.0.0.1:8000";
 const UPLOAD_URL = `${API_BASE}/upload`;
 const QUERY_URL = `${API_BASE}/query`;
+const CONVERSATIONS_URL = `${API_BASE}/conversations`;
 
 // ============================================
 // 2. HTML elements
@@ -52,11 +53,12 @@ const historyList = document.getElementById("historyList");
 // 3. Application state
 // ============================================
 
+let activeConversationId = null;
+let conversationsList = [];
 let selectedDatasetFile = null;
 let currentDatasetId = null;
 let currentDatasetName = "";
 let isLoading = false;
-let queryHistory = [];
 
 // ============================================
 // 4. Helper functions
@@ -84,6 +86,40 @@ function formatFileSize(bytes) {
     }
 
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatConversationDate(isoString) {
+    if (!isoString) return "";
+    try {
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return "";
+
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+
+        const yesterday = new Date(now);
+        yesterday.setDate(now.getDate() - 1);
+        const isYesterday = date.toDateString() === yesterday.toDateString();
+
+        const timeStr = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+        if (isToday) {
+            return `Today, ${timeStr}`;
+        }
+        if (isYesterday) {
+            return `Yesterday, ${timeStr}`;
+        }
+
+        const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+        if (diffDays < 7 && diffDays > 0) {
+            const weekday = date.toLocaleDateString([], { weekday: "short" });
+            return `${weekday}, ${timeStr}`;
+        }
+
+        return date.toLocaleDateString([], { month: "short", day: "numeric" });
+    } catch {
+        return "";
+    }
 }
 
 function showFormMessage(message, isError = true) {
@@ -214,7 +250,7 @@ function renderDatasetPreview(data, filename) {
 
     if (rowCount !== undefined && rowCount !== null) {
         datasetMeta.appendChild(
-            createElement("span", "meta-chip", `${rowCount} rows`)
+            createElement("span", "meta-chip", `${rowCount.toLocaleString()} rows`)
         );
     }
 
@@ -326,13 +362,255 @@ async function readResponse(response) {
 }
 
 // ============================================
-// 9. Upload dataset
+// 9. Persistent Conversation Management
+// ============================================
+
+async function fetchConversations() {
+    try {
+        const response = await fetch(CONVERSATIONS_URL);
+        if (!response.ok) return;
+        conversationsList = await response.json();
+        renderConversationsList();
+    } catch (err) {
+        console.warn("Could not fetch conversations:", err);
+    }
+}
+
+function renderConversationsList() {
+    historyList.replaceChildren();
+
+    if (!conversationsList || !conversationsList.length) {
+        historyList.appendChild(
+            createElement("p", "empty-history", "Your conversations will appear here.")
+        );
+        return;
+    }
+
+    conversationsList.forEach(conv => {
+        const entry = createElement("div", "history-entry");
+        if (conv.id === activeConversationId) {
+            entry.classList.add("active");
+        }
+
+        const titleText = conv.title || "New conversation";
+        const question = createElement("p", "history-question", titleText);
+        entry.title = titleText;
+
+        const time = createElement(
+            "small",
+            "history-time",
+            formatConversationDate(conv.updated_at || conv.created_at)
+        );
+
+        entry.append(question, time);
+
+        entry.addEventListener("click", () => {
+            if (isLoading) return;
+            if (conv.id === activeConversationId) return;
+            loadConversation(conv.id);
+        });
+
+        historyList.appendChild(entry);
+    });
+}
+
+async function createConversation(title = "New conversation", datasetId = null, datasetName = null) {
+    try {
+        const response = await fetch(CONVERSATIONS_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                title: title || "New conversation",
+                dataset_id: datasetId,
+                dataset_name: datasetName
+            })
+        });
+        return await readResponse(response);
+    } catch (err) {
+        console.error("Failed to create conversation:", err);
+        throw err;
+    }
+}
+
+async function postMessageToConversation(convId, role, content, extra = {}) {
+    if (!convId) return null;
+    try {
+        const response = await fetch(`${CONVERSATIONS_URL}/${convId}/messages`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                role,
+                content,
+                sql: extra.sql || null,
+                columns: extra.columns || null,
+                rows: extra.rows || null,
+                chart: extra.chart || null,
+                is_error: extra.is_error || false,
+                dataset_id: extra.dataset_id || null,
+                dataset_name: extra.dataset_name || null
+            })
+        });
+        return await readResponse(response);
+    } catch (err) {
+        console.error("Failed to persist message:", err);
+        return null;
+    }
+}
+
+async function loadConversation(conversationId) {
+    if (isLoading) return;
+    setLoading(true, "Loading conversation...");
+
+    try {
+        const response = await fetch(`${CONVERSATIONS_URL}/${conversationId}`);
+        const conv = await readResponse(response);
+
+        activeConversationId = conv.id;
+        try {
+            localStorage.setItem("clarify_active_conv_id", conv.id);
+        } catch {
+            // ignore
+        }
+
+        // Clear active conversation view
+        messages.replaceChildren();
+        resetResults();
+        showFormMessage("", false);
+        questionInput.value = "";
+        setSelectedFile(null);
+
+        // Restore dataset state
+        if (conv.dataset_id) {
+            if (conv.dataset_available && conv.dataset_info) {
+                currentDatasetId = conv.dataset_id;
+                currentDatasetName = conv.dataset_name || "Uploaded dataset";
+                renderDatasetPreview(conv.dataset_info, currentDatasetName);
+            } else {
+                currentDatasetId = null;
+                currentDatasetName = "";
+                datasetPanel.hidden = true;
+                const missingName = conv.dataset_name ? `"${conv.dataset_name}"` : "previously uploaded";
+                addMessage(
+                    "assistant",
+                    `⚠️ The dataset ${missingName} is no longer available on the server. You can upload a new dataset to continue querying.`,
+                    true
+                );
+            }
+        } else {
+            currentDatasetId = null;
+            currentDatasetName = "";
+            datasetPanel.hidden = true;
+        }
+
+        // Restore messages in chronological order
+        if (!conv.messages || conv.messages.length === 0) {
+            welcome.hidden = false;
+        } else {
+            welcome.hidden = true;
+            let lastResultMsg = null;
+
+            conv.messages.forEach(msg => {
+                addMessage(msg.role, msg.content, msg.is_error);
+                if (msg.sql || (msg.rows && msg.rows.length)) {
+                    lastResultMsg = msg;
+                }
+            });
+
+            // Restore the SQL code, results table and chart from the latest query
+            if (lastResultMsg) {
+                responseDetails.hidden = false;
+                const sql = lastResultMsg.sql || "";
+                updateSQL(sql, sql ? "READY" : "WAITING");
+                renderResults({
+                    columns: lastResultMsg.columns || [],
+                    rows: lastResultMsg.rows || []
+                });
+                renderChart(lastResultMsg.chart || null);
+            } else {
+                resetResults();
+            }
+        }
+
+        renderConversationsList();
+        conversationArea.scrollTop = conversationArea.scrollHeight;
+    } catch (err) {
+        console.error("Failed to load conversation:", err);
+        showFormMessage("Could not load conversation: " + (err.message || err));
+    } finally {
+        setLoading(false);
+        questionInput.focus();
+    }
+}
+
+async function startNewConversation() {
+    if (isLoading) return;
+
+    // If current conversation is already empty (no messages, no dataset in DB or view), reuse it
+    if (activeConversationId) {
+        const currentConv = conversationsList.find(c => c.id === activeConversationId);
+        if (currentConv && currentConv.message_count === 0 && !currentConv.dataset_id && messages.children.length === 0) {
+            messages.replaceChildren();
+            welcome.hidden = false;
+            datasetPanel.hidden = true;
+            resetResults();
+            setSelectedFile(null);
+            currentDatasetId = null;
+            currentDatasetName = "";
+            questionInput.value = "";
+            questionInput.placeholder = "Ask a question about your dataset in plain English...";
+            questionInput.focus();
+            return;
+        }
+    }
+
+    setLoading(true, "Starting new conversation...");
+    try {
+        const newConv = await createConversation("New conversation");
+        activeConversationId = newConv.id;
+        try {
+            localStorage.setItem("clarify_active_conv_id", newConv.id);
+        } catch {}
+
+        // Clear active conversation view only; old conversations remain in sidebar
+        messages.replaceChildren();
+        welcome.hidden = false;
+        datasetPanel.hidden = true;
+        resetResults();
+        setSelectedFile(null);
+        currentDatasetId = null;
+        currentDatasetName = "";
+        questionInput.value = "";
+        questionInput.placeholder = "Ask a question about your dataset in plain English...";
+        showFormMessage("", false);
+
+        await fetchConversations();
+    } catch (err) {
+        console.error("Could not start new conversation:", err);
+        showFormMessage("Could not create new conversation: " + (err.message || err));
+    } finally {
+        setLoading(false);
+        questionInput.focus();
+    }
+}
+
+// ============================================
+// 10. Upload dataset
 // ============================================
 
 async function uploadDataset(file) {
-    const formData = new FormData();
+    if (!activeConversationId) {
+        const newConv = await createConversation("New conversation");
+        activeConversationId = newConv.id;
+        try {
+            localStorage.setItem("clarify_active_conv_id", newConv.id);
+        } catch {}
+    }
 
+    const formData = new FormData();
     formData.append("file", file);
+    if (activeConversationId) {
+        formData.append("conversation_id", activeConversationId);
+    }
 
     const response = await fetch(UPLOAD_URL, {
         method: "POST",
@@ -348,22 +626,15 @@ async function uploadDataset(file) {
     }
 
     currentDatasetId = data.dataset_id;
+    currentDatasetName = data.filename || file.name || "Uploaded dataset";
 
-    try {
-        sessionStorage.setItem("clarify_dataset_id", currentDatasetId);
-        sessionStorage.setItem("clarify_dataset_name", file.name);
-        sessionStorage.setItem("clarify_dataset_data", JSON.stringify(data));
-    } catch {
-        // Ignore storage errors
-    }
-
-    renderDatasetPreview(data, file.name);
+    renderDatasetPreview(data, currentDatasetName);
 
     return data;
 }
 
 // ============================================
-// 10. Display query results
+// 11. Display query results
 // ============================================
 
 function renderResults(data) {
@@ -472,7 +743,7 @@ function renderResults(data) {
 }
 
 // ============================================
-// 11. Display chart
+// 12. Display chart
 // ============================================
 
 function renderChart(chart) {
@@ -528,7 +799,7 @@ function renderChart(chart) {
 }
 
 // ============================================
-// 12. SQL display
+// 13. SQL display
 // ============================================
 
 function updateSQL(sql, status = "READY") {
@@ -544,60 +815,6 @@ function updateSQL(sql, status = "READY") {
     if (status.toLowerCase() === "error") {
         sqlStatus.classList.add("error");
     }
-}
-
-// ============================================
-// 13. Query history
-// ============================================
-
-function saveHistory(question, sql) {
-    queryHistory.unshift({
-        question,
-        sql,
-        time: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit"
-        })
-    });
-
-    queryHistory = queryHistory.slice(0, 10);
-
-    renderHistory();
-}
-
-function renderHistory() {
-    historyList.replaceChildren();
-
-    if (!queryHistory.length) {
-        historyList.appendChild(
-            createElement(
-                "p",
-                "empty-history",
-                "Your queries will appear here."
-            )
-        );
-
-        return;
-    }
-
-    queryHistory.forEach(item => {
-        const entry = createElement("div", "history-entry");
-
-        const question = createElement(
-            "p",
-            "history-question",
-            item.question
-        );
-
-        const time = createElement(
-            "small",
-            "history-time",
-            item.time
-        );
-
-        entry.append(question, time);
-        historyList.appendChild(entry);
-    });
 }
 
 // ============================================
@@ -645,12 +862,20 @@ async function askQuestion(question) {
         return;
     }
 
-    showConversation();
+    if (!activeConversationId) {
+        const newConv = await createConversation(cleanQuestion.slice(0, 50), currentDatasetId, currentDatasetName);
+        activeConversationId = newConv.id;
+        try {
+            localStorage.setItem("clarify_active_conv_id", newConv.id);
+        } catch {}
+    }
 
+    const currentConvId = activeConversationId;
+
+    showConversation();
     addMessage("user", cleanQuestion);
 
     questionInput.value = "";
-
     showFormMessage("", false);
     resetResults();
 
@@ -671,24 +896,27 @@ async function askQuestion(question) {
             },
             body: JSON.stringify({
                 dataset_id: currentDatasetId,
-                question: cleanQuestion
+                question: cleanQuestion,
+                conversation_id: currentConvId
             })
         });
 
         const data = await readResponse(response);
-
         console.log("Query API response:", data);
 
         loadingMessage.remove();
 
+        // Ensure user hasn't switched to another conversation in the meantime
+        if (activeConversationId !== currentConvId) {
+            await fetchConversations();
+            return;
+        }
+
         if (data.clarification) {
             addMessage("assistant", data.clarification);
-
-            questionInput.placeholder =
-                "Please clarify your question...";
-
+            questionInput.placeholder = "Please clarify your question...";
             questionInput.focus();
-
+            await fetchConversations();
             return;
         }
 
@@ -703,7 +931,6 @@ async function askQuestion(question) {
         responseDetails.hidden = false;
 
         const sql = data.sql || data.query || "";
-
         updateSQL(sql, sql ? "READY" : "WAITING");
 
         renderResults({
@@ -714,29 +941,27 @@ async function askQuestion(question) {
 
         renderChart(data.chart || data.chart_url || null);
 
-        if (sql) {
-            saveHistory(cleanQuestion, sql);
-        }
+        await fetchConversations();
     } catch (error) {
         loadingMessage.remove();
-
         console.error("ClarifySQL query failed:", error.message || error);
 
-        addMessage(
-            "assistant",
-            error instanceof TypeError
-                ? "I couldn't connect to the Python backend. Make sure the API is running and the frontend endpoint is correct."
-                : error.message ||
-                  "Something went wrong while processing your question.",
-            true
-        );
+        if (activeConversationId === currentConvId) {
+            addMessage(
+                "assistant",
+                error instanceof TypeError
+                    ? "I couldn't connect to the Python backend. Make sure the API is running and the frontend endpoint is correct."
+                    : error.message ||
+                      "Something went wrong while processing your question.",
+                true
+            );
+        }
+
+        await fetchConversations();
     } finally {
         setLoading(false);
-
         questionInput.focus();
-
-        conversationArea.scrollTop =
-            conversationArea.scrollHeight;
+        conversationArea.scrollTop = conversationArea.scrollHeight;
     }
 }
 
@@ -757,7 +982,6 @@ async function handleSubmission(event) {
         showFormMessage(
             "Please choose a CSV or Excel file first."
         );
-
         return;
     }
 
@@ -782,10 +1006,12 @@ async function handleSubmission(event) {
 
             showConversation();
 
-            addMessage(
-                "assistant",
-                `Your dataset "${data.filename || currentDatasetName}" is ready.`
-            );
+            const readyText = `Your dataset "${data.filename || currentDatasetName}" is ready.`;
+            addMessage("assistant", readyText);
+            await postMessageToConversation(activeConversationId, "assistant", readyText, {
+                dataset_id: currentDatasetId,
+                dataset_name: currentDatasetName
+            });
 
             if (question) {
                 setLoading(false);
@@ -795,15 +1021,17 @@ async function handleSubmission(event) {
 
             setLoading(false);
 
-            addMessage(
-                "assistant",
-                "What do you want to know about this data?"
-            );
+            const promptText = "What do you want to know about this data?";
+            addMessage("assistant", promptText);
+            await postMessageToConversation(activeConversationId, "assistant", promptText, {
+                dataset_id: currentDatasetId,
+                dataset_name: currentDatasetName
+            });
 
-            questionInput.placeholder =
-                "What do you want to know about this data?";
-
+            questionInput.placeholder = promptText;
             questionInput.focus();
+
+            await fetchConversations();
         } catch (error) {
             console.error("ClarifySQL upload failed:", error);
 
@@ -947,70 +1175,35 @@ copySQLButton.addEventListener("click", async () => {
 });
 
 // ============================================
-// 20. New chat
+// 20. New chat button
 // ============================================
 
 newChatButton.addEventListener("click", () => {
-    if (isLoading) return;
-
-    messages.replaceChildren();
-
-    welcome.hidden = false;
-    datasetPanel.hidden = true;
-    responseDetails.hidden = true;
-
-    setSelectedFile(null);
-
-    currentDatasetId = null;
-    currentDatasetName = "";
-
-    try {
-        sessionStorage.removeItem("clarify_dataset_id");
-        sessionStorage.removeItem("clarify_dataset_name");
-        sessionStorage.removeItem("clarify_dataset_data");
-    } catch {
-        // Ignore
-    }
-
-    questionInput.value = "";
-
-    questionInput.placeholder =
-        "What do you want to know about this data?";
-
-    showFormMessage("", false);
-
-    resetResults();
-
-    queryHistory = [];
-
-    renderHistory();
-
-    questionInput.focus();
+    startNewConversation();
 });
 
 // ============================================
 // 21. Initialize application
 // ============================================
 
-renderHistory();
-resetResults();
+async function initClarifySQL() {
+    resetResults();
+    await fetchConversations();
 
-try {
-    const savedId = sessionStorage.getItem("clarify_dataset_id");
-    const savedName = sessionStorage.getItem("clarify_dataset_name");
-    const savedData = sessionStorage.getItem("clarify_dataset_data");
-    if (savedId && savedData) {
-        currentDatasetId = savedId;
-        currentDatasetName = savedName || "Uploaded dataset";
-        renderDatasetPreview(JSON.parse(savedData), currentDatasetName);
-        showConversation();
-        addMessage(
-            "assistant",
-            `Dataset "${currentDatasetName}" is ready. What do you want to know about this data?`
-        );
+    let targetConvId = null;
+    try {
+        targetConvId = localStorage.getItem("clarify_active_conv_id");
+    } catch {}
+
+    if (targetConvId && conversationsList.some(c => c.id === targetConvId)) {
+        await loadConversation(targetConvId);
+    } else if (conversationsList.length > 0) {
+        await loadConversation(conversationsList[0].id);
+    } else {
+        await startNewConversation();
     }
-} catch {
-    // Ignore restore error
+
+    console.log("ClarifySQL persistent history initialized.");
 }
 
-console.log("ClarifySQL frontend initialized.");              
+initClarifySQL();

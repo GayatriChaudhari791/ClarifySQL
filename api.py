@@ -5,10 +5,12 @@ import sqlite3
 import uuid
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -37,10 +39,115 @@ MAX_RESULT_ROWS = 500
 DATA_DIR = Path(__file__).parent / "uploaded_data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+CONVERSATIONS_DB_DIR = Path(__file__).parent / "data"
+CONVERSATIONS_DB_DIR.mkdir(parents=True, exist_ok=True)
+CONVERSATIONS_DB_PATH = CONVERSATIONS_DB_DIR / "conversations.db"
+
+
+def get_conversations_db():
+    conn = sqlite3.connect(str(CONVERSATIONS_DB_PATH), timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_conversations_db():
+    CONVERSATIONS_DB_DIR.mkdir(parents=True, exist_ok=True)
+    with get_conversations_db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                dataset_id TEXT,
+                dataset_name TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sql TEXT,
+                columns_json TEXT,
+                rows_json TEXT,
+                chart TEXT,
+                is_error INTEGER NOT NULL DEFAULT 0,
+                dataset_id TEXT,
+                dataset_name TEXT,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conversation_id, id);
+            CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+        ''')
+
+
+init_conversations_db()
+
+
+def validate_id(identifier: str, name: str = "ID") -> str:
+    if not identifier or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+        raise HTTPException(status_code=400, detail=f"Invalid {name}.")
+    return identifier
+
+
+def get_dataset_info_if_available(dataset_id: Optional[str]):
+    if not dataset_id or not re.fullmatch(r"[a-f0-9]{32}", dataset_id):
+        return False, None
+    folder = DATA_DIR / dataset_id
+    db_path = folder / "dataset.sqlite"
+    if not db_path.is_file():
+        return False, None
+    try:
+        uri = db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=10) as connection:
+            info = connection.execute('PRAGMA table_info("uploaded_data")').fetchall()
+            columns = [item[1] for item in info]
+            row_count = connection.execute('SELECT COUNT(*) FROM "uploaded_data"').fetchone()[0]
+            sample_rows = connection.execute('SELECT * FROM "uploaded_data" LIMIT 5').fetchall()
+            preview = [list(row) for row in sample_rows]
+            return True, {
+                "columns": columns,
+                "row_count": row_count,
+                "preview": preview,
+            }
+    except Exception as e:
+        print(f"Error inspecting dataset {dataset_id}: {e}")
+        return False, None
+
 
 class QueryRequest(BaseModel):
     dataset_id: str
     question: str
+    conversation_id: Optional[str] = None
+
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+
+
+class UpdateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+
+
+class AddMessageRequest(BaseModel):
+    role: str
+    content: str
+    sql: Optional[str] = None
+    columns: Optional[List[str]] = None
+    rows: Optional[List[List[Any]]] = None
+    chart: Optional[str] = None
+    is_error: Optional[bool] = False
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
 
 
 def get_dataset_paths(dataset_id: str):
@@ -431,8 +538,229 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/conversations")
+def list_conversations():
+    with get_conversations_db() as conn:
+        rows = conn.execute("""
+            SELECT 
+                c.id, c.title, c.created_at, c.updated_at, c.dataset_id, c.dataset_name,
+                COUNT(m.id) AS message_count
+            FROM conversations c
+            LEFT JOIN messages m ON c.id = m.conversation_id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+        """).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "dataset_id": r["dataset_id"],
+                "dataset_name": r["dataset_name"],
+                "message_count": r["message_count"],
+            }
+            for r in rows
+        ]
+
+
+@app.post("/conversations")
+def create_conversation(request: Optional[CreateConversationRequest] = None):
+    conv_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    title = (request.title.strip() if request and request.title else "") or "New conversation"
+    dataset_id = request.dataset_id if request else None
+    dataset_name = request.dataset_name if request else None
+
+    if dataset_id:
+        validate_id(dataset_id, "dataset ID")
+
+    with get_conversations_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversations (id, title, created_at, updated_at, dataset_id, dataset_name)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (conv_id, title, now, now, dataset_id, dataset_name),
+        )
+
+    return {
+        "id": conv_id,
+        "title": title,
+        "created_at": now,
+        "updated_at": now,
+        "dataset_id": dataset_id,
+        "dataset_name": dataset_name,
+        "messages": [],
+    }
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    validate_id(conversation_id, "conversation ID")
+    with get_conversations_db() as conn:
+        conv = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+        msg_rows = conn.execute(
+            """
+            SELECT id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY id ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
+
+    messages_list = []
+    for m in msg_rows:
+        messages_list.append({
+            "id": m["id"],
+            "role": m["role"],
+            "content": m["content"],
+            "created_at": m["created_at"],
+            "sql": m["sql"],
+            "columns": json.loads(m["columns_json"]) if m["columns_json"] else None,
+            "rows": json.loads(m["rows_json"]) if m["rows_json"] else None,
+            "chart": m["chart"],
+            "is_error": bool(m["is_error"]),
+            "dataset_id": m["dataset_id"],
+            "dataset_name": m["dataset_name"],
+        })
+
+    dataset_available, dataset_info = get_dataset_info_if_available(conv["dataset_id"])
+
+    return {
+        "id": conv["id"],
+        "title": conv["title"],
+        "created_at": conv["created_at"],
+        "updated_at": conv["updated_at"],
+        "dataset_id": conv["dataset_id"],
+        "dataset_name": conv["dataset_name"],
+        "dataset_available": dataset_available,
+        "dataset_info": dataset_info,
+        "messages": messages_list,
+    }
+
+
+@app.post("/conversations/{conversation_id}/messages")
+def add_message(conversation_id: str, request: AddMessageRequest):
+    validate_id(conversation_id, "conversation ID")
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_conversations_db() as conn:
+        conv = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+        new_title = conv["title"]
+        if conv["title"] in ("New conversation", "") and request.role == "user" and request.content.strip():
+            clean = request.content.strip()
+            new_title = clean[:50] + ("..." if len(clean) > 50 else "")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO messages (
+                conversation_id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                request.role,
+                request.content,
+                now,
+                request.sql,
+                json.dumps(request.columns) if request.columns is not None else None,
+                json.dumps(request.rows) if request.rows is not None else None,
+                request.chart,
+                1 if request.is_error else 0,
+                request.dataset_id or conv["dataset_id"],
+                request.dataset_name or conv["dataset_name"],
+            ),
+        )
+        msg_id = cursor.lastrowid
+
+        conn.execute(
+            """
+            UPDATE conversations 
+            SET updated_at = ?, title = ?,
+                dataset_id = COALESCE(?, dataset_id),
+                dataset_name = COALESCE(?, dataset_name)
+            WHERE id = ?
+            """,
+            (now, new_title, request.dataset_id, request.dataset_name, conversation_id),
+        )
+
+    return {
+        "id": msg_id,
+        "conversation_id": conversation_id,
+        "role": request.role,
+        "content": request.content,
+        "created_at": now,
+        "sql": request.sql,
+        "columns": request.columns,
+        "rows": request.rows,
+        "chart": request.chart,
+        "is_error": request.is_error,
+        "dataset_id": request.dataset_id or conv["dataset_id"],
+        "dataset_name": request.dataset_name or conv["dataset_name"],
+    }
+
+
+@app.patch("/conversations/{conversation_id}")
+def update_conversation(conversation_id: str, request: UpdateConversationRequest):
+    validate_id(conversation_id, "conversation ID")
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conversations_db() as conn:
+        conv = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+        title = request.title if request.title is not None else conv["title"]
+        dataset_id = request.dataset_id if request.dataset_id is not None else conv["dataset_id"]
+        dataset_name = request.dataset_name if request.dataset_name is not None else conv["dataset_name"]
+
+        conn.execute(
+            """
+            UPDATE conversations
+            SET title = ?, dataset_id = ?, dataset_name = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (title, dataset_id, dataset_name, now, conversation_id),
+        )
+
+    return {
+        "id": conversation_id,
+        "title": title,
+        "dataset_id": dataset_id,
+        "dataset_name": dataset_name,
+        "updated_at": now,
+    }
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    validate_id(conversation_id, "conversation ID")
+    with get_conversations_db() as conn:
+        cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    return {"status": "deleted", "id": conversation_id}
+
+
 @app.post("/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(
+    file: UploadFile = File(...),
+    conversation_id: Optional[str] = Form(None),
+):
     filename = Path(file.filename or "dataset.csv").name
 
     if Path(filename).suffix.lower() not in {".csv", ".xlsx", ".xls"}:
@@ -471,6 +799,19 @@ async def upload_dataset(file: UploadFile = File(...)):
             detail=f"Could not prepare the dataset: {error}",
         ) from error
 
+    if conversation_id:
+        validate_id(conversation_id, "conversation ID")
+        now = datetime.now(timezone.utc).isoformat()
+        with get_conversations_db() as conn:
+            conn.execute(
+                """
+                UPDATE conversations
+                SET dataset_id = ?, dataset_name = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (dataset_id, filename, now, conversation_id),
+            )
+
     return {
         "dataset_id": dataset_id,
         "filename": filename,
@@ -478,6 +819,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         "columns": list(frame.columns),
         "preview": dataframe_to_json_rows(frame.head(5)),
         "schema": get_schema(frame),
+        "conversation_id": conversation_id,
     }
 
 
@@ -494,6 +836,36 @@ def query_dataset(request: QueryRequest):
             status_code=400,
             detail="Please keep your question under 2,000 characters.",
         )
+
+    conv_id = request.conversation_id
+    if conv_id:
+        validate_id(conv_id, "conversation ID")
+        now = datetime.now(timezone.utc).isoformat()
+        with get_conversations_db() as conn:
+            conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+            if not conv:
+                raise HTTPException(status_code=404, detail="Conversation not found.")
+
+            new_title = conv["title"]
+            if conv["title"] in ("New conversation", ""):
+                clean_title = question[:50] + ("..." if len(question) > 50 else "")
+                new_title = clean_title
+
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, created_at, dataset_id)
+                VALUES (?, 'user', ?, ?, ?)
+                """,
+                (conv_id, question, now, request.dataset_id),
+            )
+            conn.execute(
+                """
+                UPDATE conversations
+                SET updated_at = ?, title = ?, dataset_id = COALESCE(?, dataset_id)
+                WHERE id = ?
+                """,
+                (now, new_title, request.dataset_id, conv_id),
+            )
 
     _, db_path = get_dataset_paths(request.dataset_id)
 
@@ -532,14 +904,69 @@ def query_dataset(request: QueryRequest):
             result_rows,
         )
 
+        if conv_id:
+            now = datetime.now(timezone.utc).isoformat()
+            with get_conversations_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO messages (
+                        conversation_id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id
+                    ) VALUES (?, 'assistant', ?, ?, ?, ?, ?, ?, 0, ?)
+                    """,
+                    (
+                        conv_id,
+                        explanation,
+                        now,
+                        validated_sql,
+                        json.dumps(result_columns),
+                        json.dumps(result_rows),
+                        None,
+                        request.dataset_id,
+                    ),
+                )
+                conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+
     except RuntimeError as error:
         print(f"QUERY RUNTIME ERROR: {error}")
+        if conv_id:
+            now = datetime.now(timezone.utc).isoformat()
+            with get_conversations_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO messages (conversation_id, role, content, created_at, is_error, dataset_id)
+                    VALUES (?, 'assistant', ?, ?, 1, ?)
+                    """,
+                    (conv_id, str(error), now, request.dataset_id),
+                )
+                conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
         raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
         print(f"QUERY VALUE ERROR: {error} | Generated SQL: {locals().get('generated_sql')!r}")
+        if conv_id:
+            now = datetime.now(timezone.utc).isoformat()
+            with get_conversations_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO messages (conversation_id, role, content, created_at, is_error, dataset_id)
+                    VALUES (?, 'assistant', ?, ?, 1, ?)
+                    """,
+                    (conv_id, str(error), now, request.dataset_id),
+                )
+                conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
         raise HTTPException(status_code=422, detail=str(error)) from error
     except sqlite3.Error as error:
         print(f"QUERY SQLITE ERROR: {error}")
+        if conv_id:
+            now = datetime.now(timezone.utc).isoformat()
+            with get_conversations_db() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO messages (conversation_id, role, content, created_at, is_error, dataset_id)
+                    VALUES (?, 'assistant', ?, ?, 1, ?)
+                    """,
+                    (conv_id, str(error), now, request.dataset_id),
+                )
+                conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     return {
@@ -551,4 +978,5 @@ def query_dataset(request: QueryRequest):
         "answer": explanation,
         "row_count": len(result_rows),
         "chart": None,
+        "conversation_id": conv_id,
     }
