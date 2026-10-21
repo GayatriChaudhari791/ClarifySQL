@@ -30,3 +30,6 @@ Thumbs.db
 
 # Uploaded datasets
 uploaded_data/
+
+# Local conversation history database
+data/conversations.db

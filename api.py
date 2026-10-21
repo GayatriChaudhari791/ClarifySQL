@@ -62,7 +62,9 @@ def init_conversations_db():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 dataset_id TEXT,
-                dataset_name TEXT
+                dataset_name TEXT,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                is_custom_title INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -78,12 +80,24 @@ def init_conversations_db():
                 is_error INTEGER NOT NULL DEFAULT 0,
                 dataset_id TEXT,
                 dataset_name TEXT,
+                clarification_options_json TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conversation_id, id);
             CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
         ''')
+        cols = [r[1] for r in conn.execute('PRAGMA table_info("messages")').fetchall()]
+        if "clarification_options_json" not in cols:
+            conn.execute('ALTER TABLE messages ADD COLUMN clarification_options_json TEXT')
+
+        conv_cols = [r[1] for r in conn.execute('PRAGMA table_info("conversations")').fetchall()]
+        if "is_pinned" not in conv_cols:
+            conn.execute('ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0')
+        if "is_custom_title" not in conv_cols:
+            conn.execute('ALTER TABLE conversations ADD COLUMN is_custom_title INTEGER NOT NULL DEFAULT 0')
+
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_pinned_updated ON conversations(is_pinned DESC, updated_at DESC)')
 
 
 init_conversations_db()
@@ -124,18 +138,23 @@ class QueryRequest(BaseModel):
     dataset_id: str
     question: str
     conversation_id: Optional[str] = None
+    original_question: Optional[str] = None
+    selected_option_id: Optional[str] = None
+    selected_option_label: Optional[str] = None
 
 
 class CreateConversationRequest(BaseModel):
     title: Optional[str] = None
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 
 class UpdateConversationRequest(BaseModel):
     title: Optional[str] = None
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 
 class AddMessageRequest(BaseModel):
@@ -148,6 +167,7 @@ class AddMessageRequest(BaseModel):
     is_error: Optional[bool] = False
     dataset_id: Optional[str] = None
     dataset_name: Optional[str] = None
+    clarification_options: Optional[List[Any]] = None
 
 
 def get_dataset_paths(dataset_id: str):
@@ -302,17 +322,201 @@ def get_schema(frame: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def generate_sql(question: str, schema: str) -> str:
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", text.strip().lower()).strip("_")
+    return slug[:40] or "option"
+
+
+def clean_clarification_text(clarification: str, question: Optional[str] = None) -> str:
+    cleaned = clarification.strip()
+    if not question:
+        return cleaned
+
+    # Strip leading echo of the question if model repeated it
+    # E.g. 'Give me a breakdown of sellers. How would you like to group the sellers?'
+    # -> 'How would you like to group the sellers?'
+    q_clean = question.strip().rstrip("?.!").strip()
+    pattern = r'^(?:(?:regarding|about|for)\s+[\"\'\`]?' + re.escape(q_clean) + r'[\"\'\`]?[,:\s-]*|' + re.escape(q_clean) + r'[\"\'\`]?[.?!:\s-]+)\s*'
+    stripped = re.sub(pattern, '', cleaned, flags=re.IGNORECASE).strip()
+    if stripped:
+        cleaned = stripped[0].upper() + stripped[1:] if len(stripped) > 1 else stripped.upper()
+    return cleaned
+
+
+def parse_ambiguity_response(text: str, question: Optional[str] = None) -> dict:
+    clarify_match = re.search(r"CLARIFY:\s*(.*?)(?=\n\s*(?:OPTIONS:?|[-*•\d]\s)|\Z)", text, flags=re.DOTALL | re.IGNORECASE)
+    options_match = re.search(r"OPTIONS:\s*(.*)", text, flags=re.DOTALL | re.IGNORECASE)
+
+    if clarify_match:
+        clarification_text = clarify_match.group(1).strip()
+        if question:
+            clarification_text = clean_clarification_text(clarification_text, question)
+
+        raw_options = []
+        if options_match:
+            raw_options = options_match.group(1).strip().splitlines()
+        else:
+            after_clarify = text[clarify_match.end():]
+            for line in after_clarify.splitlines():
+                if re.match(r"^\s*[-*•\d\.\)]\s+", line):
+                    raw_options.append(line)
+
+        options = []
+        for line in raw_options:
+            cleaned = re.sub(r"^[\s*\-•\d\.\)]+\s*", "", line).strip()
+            if cleaned and not cleaned.lower().startswith("sql:"):
+                options.append({
+                    "id": slugify(cleaned),
+                    "label": cleaned
+                })
+        return {
+            "is_clarification": True,
+            "clarification": clarification_text,
+            "options": options[:4]
+        }
+
+    # If not a clarification, treat as SQL
+    sql = text
+    sql = re.sub(r"^\s*```(?:sql)?\s*", "", sql, flags=re.IGNORECASE | re.MULTILINE)
+    sql = re.sub(r"\s*```\s*$", "", sql, flags=re.MULTILINE).strip()
+    sql = re.sub(r"^\s*SQL:\s*", "", sql, flags=re.IGNORECASE).strip()
+    return {
+        "is_clarification": False,
+        "sql": sql
+    }
+
+
+def ground_options_in_schema(ambig_result: dict, question: str, columns: List[str]) -> dict:
+    if not columns:
+        return ambig_result
+
+    lower_cols = [c.lower() for c in columns]
+
+    metric_terms = [
+        'price', 'sale', 'sales', 'rev', 'revenue', 'pay', 'payment', 'order',
+        'orders', 'amount', 'total', 'quant', 'quantity', 'score', 'rate',
+        'rating', 'value', 'cost', 'profit', 'margin', 'units', 'sold'
+    ]
+    has_performance = any(any(t in col for t in metric_terms) for col in lower_cols)
+
+    is_ranking_question = any(term in question.lower() for term in [
+        'best', 'top', 'rank', 'performer', 'performance', 'highest revenue',
+        'most sales', 'highest sales', 'most popular', 'worst', 'lowest'
+    ])
+
+    if not has_performance and is_ranking_question:
+        def col_rank(c: str) -> int:
+            cl = c.lower()
+            if 'state' in cl:
+                return 0
+            if 'city' in cl:
+                return 1
+            if 'type' in cl or 'cat' in cl or 'status' in cl:
+                return 2
+            if 'zip' in cl:
+                return 3
+            return 4
+
+        sorted_cols = sorted(columns, key=col_rank)
+        alt_options = []
+        for col in sorted_cols:
+            c_low = col.lower()
+            if 'id' in c_low and not any(k in c_low for k in ['category', 'type']):
+                continue
+            clean_name = col.replace('_', ' ').strip()
+            entity_prefix = "Group sellers by" if "seller" in question.lower() else ("Group customers by" if "customer" in question.lower() else "Group by")
+            alt_options.append({
+                "id": slugify(f"group_by_{col}"),
+                "label": f"{entity_prefix} {clean_name}"
+            })
+            if len(alt_options) >= 3:
+                break
+
+        if not alt_options:
+            alt_options = [
+                {"id": "preview_records", "label": "Show first records"},
+                {"id": "count_total", "label": "Total count of records"}
+            ]
+
+        entity = "sellers" if "seller" in question.lower() else ("customers" if "customer" in question.lower() else "records")
+        return {
+            "is_clarification": True,
+            "clarification": f"This dataset does not contain sales, order, or revenue columns to evaluate {entity} performance. Would you like to explore {entity} by their available attributes instead?",
+            "options": alt_options
+        }
+
+    if ambig_result.get("is_clarification"):
+        valid_options = []
+        for opt in ambig_result.get("options", []):
+            label_low = opt["label"].lower()
+            if 'order' in label_low and not any('order' in c for c in lower_cols):
+                continue
+            if any(term in label_low for term in ['sale', 'revenue', 'rev']) and not any(k in c for k in ['sale', 'rev', 'price', 'amount', 'val', 'total'] for c in lower_cols):
+                continue
+            if 'price' in label_low and not any(k in c for k in ['price', 'cost', 'val', 'amount'] for c in lower_cols):
+                continue
+            valid_options.append(opt)
+
+        if len(valid_options) < 2:
+            for col in columns:
+                c_low = col.lower()
+                if 'id' in c_low and not any(k in c_low for k in ['category', 'type']):
+                    continue
+                clean_name = col.replace('_', ' ').strip()
+                entity_prefix = "Group sellers by" if "seller" in question.lower() else ("Group customers by" if "customer" in question.lower() else "Group by")
+                new_opt = {
+                    "id": slugify(f"group_by_{col}"),
+                    "label": f"{entity_prefix} {clean_name}"
+                }
+                if not any(o["id"] == new_opt["id"] or o["label"].lower() == new_opt["label"].lower() for o in valid_options):
+                    valid_options.append(new_opt)
+                if len(valid_options) >= 3:
+                    break
+
+        if len(valid_options) >= 2:
+            return {
+                "is_clarification": True,
+                "clarification": ambig_result.get("clarification"),
+                "options": valid_options[:4]
+            }
+
+    return ambig_result
+
+
+def generate_sql_or_clarification(question: str, schema: str, columns: Optional[List[str]] = None) -> dict:
+    preview_match = re.match(
+        r"^\s*(?:show|display|get|select|preview)?\s*(?:me\s*)?(?:the\s*)?first\s+(\d+)\s*(?:rows?|records?|items?)\s*\.?\s*$",
+        question.strip(),
+        re.IGNORECASE,
+    )
+    if preview_match:
+        limit_val = int(preview_match.group(1))
+        return {
+            "is_clarification": False,
+            "sql": f'SELECT * FROM "uploaded_data" LIMIT {limit_val}',
+        }
+
     prompt = f"""
 You are ClarifySQL, an expert natural-language-to-SQL assistant.
 
-Convert the user's question into exactly one valid SQLite SELECT query.
+Your task is to analyze the user's question against the dataset schema and:
+1. If the question has a clear, specific meaning, generate exactly one valid SQLite SELECT query.
+2. If the question is ambiguous (meaning it uses subjective or underspecified terms like "best", "top", "performance", "location", "distribution", "status"):
+   - Propose options ONLY for metrics and columns that actually exist in the schema.
+   - If performance metrics (sales, revenue, orders) DO NOT exist in the schema, do not propose them. Offer options based on available columns instead.
+   - Format:
+CLARIFY: <Clarification question>
+OPTIONS:
+- <Option 1 label>
+- <Option 2 label>
+- <Option 3 label>
+3. If the question genuinely cannot be answered using the available columns, return INVALID.
 
 DATASET SCHEMA:
 {schema}
 
-RULES:
-- Return only the SQL query. Do not use Markdown fences.
+RULES FOR SQL GENERATION:
+- Return only the SQL query if clear. Do not use Markdown fences.
 - Query only the table "uploaded_data".
 - Use only the columns listed in the schema.
 - Quote column names using double quotes.
@@ -329,7 +533,7 @@ RULES:
   (numerator * 100.0 / denominator).
 - Use a subquery to calculate the total when the denominator requires
   the total number of rows in the dataset.
-- Use GROUP BY when the user asks for results by category.
+- Use GROUP BY when the user asks for results by category or entity.
 - Use COUNT(*) when counting rows.
 - Use COUNT(DISTINCT column) when counting unique values.
 - Use SUM, AVG, MIN, and MAX when appropriate for the available data.
@@ -342,6 +546,18 @@ RULES:
   for each category and divide it by the total number of rows.
 - Do not assume that a question is impossible merely because it requires
   more than one SQL operation.
+
+RULES FOR CLARIFICATION:
+- Use CLARIFY when a question is ambiguous, underspecified, or has multiple plausible interpretations based on the schema columns.
+- Under CLARIFY, write ONLY the direct clarification question (e.g. "How would you like to group sellers?"). NEVER echo, prefix, or repeat the user's original question.
+- Never invent columns or metrics that are absent from the schema.
+- Provide 2 to 4 realistic options that directly correspond to available columns in the schema.
+- Format:
+CLARIFY: <Clarification question>
+OPTIONS:
+- <Option 1 label>
+- <Option 2 label>
+- <Option 3 label>
 
 EXAMPLES:
 
@@ -373,26 +589,102 @@ GROUP BY "seller_state"
 ORDER BY seller_count DESC
 LIMIT 1
 
-Question: What is the average postal code prefix?
-SQL:
-SELECT AVG("seller_zip_code_prefix") AS average_zip_code_prefix
-FROM "uploaded_data"
+Question: Where are most sellers located?
+CLARIFY: How would you like to group sellers by location?
+OPTIONS:
+- Group by state
+- Group by city
+- Group by zip code prefix
+
+Question: Give me a breakdown of sellers.
+CLARIFY: How would you like to group the sellers?
+OPTIONS:
+- Group by state
+- Group by city
+- Group by zip code prefix
+
+Question: Which are the best customers?
+CLARIFY: How would you like to define best customers?
+OPTIONS:
+- Highest total payment value
+- Most orders placed
+- Highest average order value
 
 Question: What is the total revenue?
 SQL:
 INVALID
 
-The final example must return INVALID when the schema contains no
-revenue column or other information from which revenue can be calculated.
-
 USER QUESTION:
 {question}
-
-Return only the SQL query or INVALID.
 """
-
     answer = call_ollama(prompt)
+    raw_res = parse_ambiguity_response(answer, question)
+    if columns:
+        return ground_options_in_schema(raw_res, question, columns)
+    return raw_res
 
+
+def generate_resolved_sql(original_question: str, selected_option: str, schema: str) -> str:
+    prompt = f"""
+You are ClarifySQL, an expert natural-language-to-SQL assistant.
+
+The user originally asked an ambiguous question: "{original_question}"
+The user has now clarified their intent: "{selected_option}"
+
+Generate exactly one valid SQLite SELECT query that answers the user's clarified intent.
+Do not ask for clarification. Return only the SQL query.
+
+DATASET SCHEMA:
+{schema}
+
+RULES:
+- Return only the SQL query. Do not use Markdown fences.
+- Query only the table "uploaded_data".
+- Use only the columns listed in the schema.
+- Quote column names using double quotes.
+- Use SQLite-compatible SQL.
+- Generate one read-only SELECT statement only.
+- Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA,
+  ATTACH, DETACH, REPLACE, or multiple statements.
+- Never invent columns, tables, values, or relationships.
+- Return INVALID only if the question genuinely cannot be answered
+  using the available columns.
+- Use GROUP BY when grouping or aggregating by category or entity.
+- Use SUM, AVG, MIN, MAX, and COUNT as appropriate.
+- For grouping or ranking questions, order by the aggregated count descending. If grouping by high-cardinality attributes like zip codes or when exploring top entities, use LIMIT 20 to avoid exceeding result limits.
+
+EXAMPLES:
+
+Question: Show me the first 5 rows
+SQL:
+SELECT * FROM "uploaded_data" LIMIT 5
+
+Question: Which state has the most sellers?
+SQL:
+SELECT
+    "seller_state",
+    COUNT(*) AS seller_count
+FROM "uploaded_data"
+GROUP BY "seller_state"
+ORDER BY seller_count DESC
+LIMIT 1
+
+Question: Group sellers by seller state
+SQL:
+SELECT
+    "seller_state",
+    COUNT(*) AS seller_count
+FROM "uploaded_data"
+GROUP BY "seller_state"
+ORDER BY seller_count DESC
+
+USER CLARIFIED INTENT:
+Original question: {original_question}
+User clarified choice: {selected_option}
+
+SQL:
+"""
+    answer = call_ollama(prompt)
     answer = re.sub(
         r"^\s*```(?:sql)?\s*",
         "",
@@ -401,8 +693,14 @@ Return only the SQL query or INVALID.
     )
     answer = re.sub(r"\s*```\s*$", "", answer, flags=re.MULTILINE).strip()
     answer = re.sub(r"^\s*SQL:\s*", "", answer, flags=re.IGNORECASE).strip()
-
     return answer
+
+
+def generate_sql(question: str, schema: str) -> str:
+    res = generate_sql_or_clarification(question, schema)
+    if res.get("is_clarification"):
+        return "INVALID"
+    return res.get("sql", "INVALID")
 
 def validate_sql(query: str) -> str:
     query = query.strip()
@@ -544,11 +842,12 @@ def list_conversations():
         rows = conn.execute("""
             SELECT 
                 c.id, c.title, c.created_at, c.updated_at, c.dataset_id, c.dataset_name,
+                c.is_pinned, c.is_custom_title,
                 COUNT(m.id) AS message_count
             FROM conversations c
             LEFT JOIN messages m ON c.id = m.conversation_id
             GROUP BY c.id
-            ORDER BY c.updated_at DESC
+            ORDER BY c.is_pinned DESC, c.updated_at DESC
         """).fetchall()
         return [
             {
@@ -558,6 +857,8 @@ def list_conversations():
                 "updated_at": r["updated_at"],
                 "dataset_id": r["dataset_id"],
                 "dataset_name": r["dataset_name"],
+                "is_pinned": bool(r["is_pinned"]),
+                "is_custom_title": bool(r["is_custom_title"]),
                 "message_count": r["message_count"],
             }
             for r in rows
@@ -568,9 +869,12 @@ def list_conversations():
 def create_conversation(request: Optional[CreateConversationRequest] = None):
     conv_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc).isoformat()
+    has_custom_title = bool(request and request.title and request.title.strip())
     title = (request.title.strip() if request and request.title else "") or "New conversation"
     dataset_id = request.dataset_id if request else None
     dataset_name = request.dataset_name if request else None
+    is_pinned = 1 if (request and request.is_pinned) else 0
+    is_custom_title = 1 if has_custom_title else 0
 
     if dataset_id:
         validate_id(dataset_id, "dataset ID")
@@ -578,10 +882,10 @@ def create_conversation(request: Optional[CreateConversationRequest] = None):
     with get_conversations_db() as conn:
         conn.execute(
             """
-            INSERT INTO conversations (id, title, created_at, updated_at, dataset_id, dataset_name)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO conversations (id, title, created_at, updated_at, dataset_id, dataset_name, is_pinned, is_custom_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (conv_id, title, now, now, dataset_id, dataset_name),
+            (conv_id, title, now, now, dataset_id, dataset_name, is_pinned, is_custom_title),
         )
 
     return {
@@ -591,6 +895,8 @@ def create_conversation(request: Optional[CreateConversationRequest] = None):
         "updated_at": now,
         "dataset_id": dataset_id,
         "dataset_name": dataset_name,
+        "is_pinned": bool(is_pinned),
+        "is_custom_title": bool(is_custom_title),
         "messages": [],
     }
 
@@ -607,7 +913,7 @@ def get_conversation(conversation_id: str):
 
         msg_rows = conn.execute(
             """
-            SELECT id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name
+            SELECT id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name, clarification_options_json
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -629,6 +935,7 @@ def get_conversation(conversation_id: str):
             "is_error": bool(m["is_error"]),
             "dataset_id": m["dataset_id"],
             "dataset_name": m["dataset_name"],
+            "clarification_options": json.loads(m["clarification_options_json"]) if m["clarification_options_json"] else None,
         })
 
     dataset_available, dataset_info = get_dataset_info_if_available(conv["dataset_id"])
@@ -640,6 +947,8 @@ def get_conversation(conversation_id: str):
         "updated_at": conv["updated_at"],
         "dataset_id": conv["dataset_id"],
         "dataset_name": conv["dataset_name"],
+        "is_pinned": bool(conv["is_pinned"]),
+        "is_custom_title": bool(conv["is_custom_title"]),
         "dataset_available": dataset_available,
         "dataset_info": dataset_info,
         "messages": messages_list,
@@ -659,15 +968,15 @@ def add_message(conversation_id: str, request: AddMessageRequest):
             raise HTTPException(status_code=404, detail="Conversation not found.")
 
         new_title = conv["title"]
-        if conv["title"] in ("New conversation", "") and request.role == "user" and request.content.strip():
+        if not conv["is_custom_title"] and conv["title"] in ("New conversation", "") and request.role == "user" and request.content.strip():
             clean = request.content.strip()
             new_title = clean[:50] + ("..." if len(clean) > 50 else "")
 
         cursor = conn.execute(
             """
             INSERT INTO messages (
-                conversation_id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                conversation_id, role, content, created_at, sql, columns_json, rows_json, chart, is_error, dataset_id, dataset_name, clarification_options_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -681,6 +990,7 @@ def add_message(conversation_id: str, request: AddMessageRequest):
                 1 if request.is_error else 0,
                 request.dataset_id or conv["dataset_id"],
                 request.dataset_name or conv["dataset_name"],
+                json.dumps(request.clarification_options) if request.clarification_options is not None else None,
             ),
         )
         msg_id = cursor.lastrowid
@@ -709,6 +1019,7 @@ def add_message(conversation_id: str, request: AddMessageRequest):
         "is_error": request.is_error,
         "dataset_id": request.dataset_id or conv["dataset_id"],
         "dataset_name": request.dataset_name or conv["dataset_name"],
+        "clarification_options": request.clarification_options,
     }
 
 
@@ -723,17 +1034,22 @@ def update_conversation(conversation_id: str, request: UpdateConversationRequest
         if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found.")
 
-        title = request.title if request.title is not None else conv["title"]
+        title = request.title.strip() if request.title is not None else conv["title"]
         dataset_id = request.dataset_id if request.dataset_id is not None else conv["dataset_id"]
         dataset_name = request.dataset_name if request.dataset_name is not None else conv["dataset_name"]
+        is_pinned = (1 if request.is_pinned else 0) if request.is_pinned is not None else conv["is_pinned"]
+
+        is_custom_title = conv["is_custom_title"]
+        if request.title is not None and request.title.strip():
+            is_custom_title = 1
 
         conn.execute(
             """
             UPDATE conversations
-            SET title = ?, dataset_id = ?, dataset_name = ?, updated_at = ?
+            SET title = ?, dataset_id = ?, dataset_name = ?, is_pinned = ?, is_custom_title = ?, updated_at = ?
             WHERE id = ?
             """,
-            (title, dataset_id, dataset_name, now, conversation_id),
+            (title, dataset_id, dataset_name, is_pinned, is_custom_title, now, conversation_id),
         )
 
     return {
@@ -741,6 +1057,8 @@ def update_conversation(conversation_id: str, request: UpdateConversationRequest
         "title": title,
         "dataset_id": dataset_id,
         "dataset_name": dataset_name,
+        "is_pinned": bool(is_pinned),
+        "is_custom_title": bool(is_custom_title),
         "updated_at": now,
     }
 
@@ -749,6 +1067,7 @@ def update_conversation(conversation_id: str, request: UpdateConversationRequest
 def delete_conversation(conversation_id: str):
     validate_id(conversation_id, "conversation ID")
     with get_conversations_db() as conn:
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
         cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Conversation not found.")
@@ -826,7 +1145,9 @@ async def upload_dataset(
 @app.post("/query")
 def query_dataset(request: QueryRequest):
     question = request.question.strip()
-    print(f"QUERY RECEIVED: {question!r} on dataset {request.dataset_id!r}")
+    orig_q = (request.original_question or "").strip()
+    selected_opt_label = (request.selected_option_label or question).strip()
+    print(f"QUERY RECEIVED: {question!r} (orig: {orig_q!r}) on dataset {request.dataset_id!r}")
 
     if not question:
         raise HTTPException(status_code=400, detail="Please enter a question.")
@@ -847,8 +1168,8 @@ def query_dataset(request: QueryRequest):
                 raise HTTPException(status_code=404, detail="Conversation not found.")
 
             new_title = conv["title"]
-            if conv["title"] in ("New conversation", ""):
-                clean_title = question[:50] + ("..." if len(question) > 50 else "")
+            if not conv["is_custom_title"] and conv["title"] in ("New conversation", ""):
+                clean_title = (orig_q or question)[:50] + ("..." if len(orig_q or question) > 50 else "")
                 new_title = clean_title
 
             conn.execute(
@@ -856,7 +1177,7 @@ def query_dataset(request: QueryRequest):
                 INSERT INTO messages (conversation_id, role, content, created_at, dataset_id)
                 VALUES (?, 'user', ?, ?, ?)
                 """,
-                (conv_id, question, now, request.dataset_id),
+                (conv_id, selected_opt_label, now, request.dataset_id),
             )
             conn.execute(
                 """
@@ -878,6 +1199,7 @@ def query_dataset(request: QueryRequest):
         row_count = connection.execute(
             'SELECT COUNT(*) FROM "uploaded_data"'
         ).fetchone()[0]
+        sample_rows = connection.execute('SELECT * FROM "uploaded_data" LIMIT 3').fetchall()
 
     schema_lines = [
         'TABLE: "uploaded_data"',
@@ -885,20 +1207,60 @@ def query_dataset(request: QueryRequest):
         "Columns:",
     ]
 
-    for column in columns_in_dataset:
-        schema_lines.append(f'- "{column}"')
+    for idx, column in enumerate(columns_in_dataset):
+        samples = [str(r[idx])[:40] for r in sample_rows if r[idx] is not None][:2]
+        sample_str = f" | samples: {', '.join(samples)}" if samples else ""
+        schema_lines.append(f'- "{column}"{sample_str}')
 
     schema = "\n".join(schema_lines)
 
     try:
-        generated_sql = generate_sql(question, schema)
+        if orig_q:
+            # Resolving an ambiguous question with user's selected/typed option
+            generated_sql = generate_resolved_sql(orig_q, selected_opt_label, schema)
+        else:
+            ambig_res = generate_sql_or_clarification(question, schema, columns_in_dataset)
+            if ambig_res.get("is_clarification"):
+                clarification_text = ambig_res.get("clarification", "Could you please clarify your question?")
+                options = ambig_res.get("options", [])
+
+                if conv_id:
+                    now = datetime.now(timezone.utc).isoformat()
+                    with get_conversations_db() as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO messages (
+                                conversation_id, role, content, created_at, clarification_options_json, dataset_id
+                            ) VALUES (?, 'assistant', ?, ?, ?, ?)
+                            """,
+                            (
+                                conv_id,
+                                clarification_text,
+                                now,
+                                json.dumps(options),
+                                request.dataset_id,
+                            ),
+                        )
+                        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+
+                return {
+                    "dataset_id": request.dataset_id,
+                    "question": question,
+                    "original_question": question,
+                    "clarification": clarification_text,
+                    "options": options,
+                    "conversation_id": conv_id,
+                }
+            generated_sql = ambig_res.get("sql", "INVALID")
+
         validated_sql = validate_sql(generated_sql)
         result_columns, result_rows = execute_readonly_query(
             db_path,
             validated_sql,
         )
+        context_q = f"{orig_q} ({selected_opt_label})" if orig_q else question
         explanation = explain_results(
-            question,
+            context_q,
             validated_sql,
             result_columns,
             result_rows,
@@ -972,6 +1334,7 @@ def query_dataset(request: QueryRequest):
     return {
         "dataset_id": request.dataset_id,
         "question": question,
+        "original_question": orig_q or question,
         "sql": validated_sql,
         "columns": result_columns,
         "rows": result_rows,

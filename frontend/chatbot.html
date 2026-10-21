@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClarifySQL | Data Analytics</title>
-  <link rel="stylesheet" href="chatbot.css">
+  <link rel="stylesheet" href="chatbot.css?v=20261021_5">
   <script>
     // Prevent external live-reload watchers (like VS Code Live Server) from resetting active sessions
     (function () {
@@ -117,10 +117,7 @@
           </p>
         </div>
 
-        <!-- Conversation messages -->
-        <div id="messages" class="messages" aria-live="polite"></div>
-
-        <!-- Uploaded dataset and preview -->
+        <!-- 1. Uploaded dataset and preview at top of workspace -->
         <section id="datasetPanel" class="dataset-panel" hidden>
           <div class="dataset-heading">
             <div>
@@ -136,6 +133,9 @@
           <div id="datasetMeta" class="dataset-meta"></div>
           <div id="previewWrap" class="preview-wrap"></div>
         </section>
+
+        <!-- 2. Conversation section directly below dataset preview -->
+        <div id="messages" class="messages" aria-live="polite"></div>
 
         <!-- Upload and question form.
              This is outside the welcome section so it stays available
@@ -189,9 +189,14 @@
             ></textarea>
 
             <div class="question-box-footer">
-              <span id="questionHint">
-                Upload a dataset to begin your analysis.
-              </span>
+              <div class="question-box-hints">
+                <span id="questionHint">
+                  Upload a dataset to begin your analysis.
+                </span>
+                <button id="inlineChangeFileButton" class="inline-change-file-btn" type="button" title="Upload or change dataset" hidden>
+                  <span>📁</span> Change dataset
+                </button>
+              </div>
 
               <button id="sendButton" class="send-button" type="button">
                 <span id="sendButtonText">Continue</span>
@@ -265,6 +270,38 @@
     </main>
   </div>
 
-<script src="./chatbot.js" defer></script>
+  <!-- Conversation Actions Floating Dropdown Menu -->
+  <div id="historyDropdownMenu" class="history-dropdown-menu" role="menu" hidden>
+    <button class="history-menu-item" id="historyMenuRename" type="button" role="menuitem">
+      <span class="history-menu-icon" aria-hidden="true">✏️</span>
+      <span>Rename</span>
+    </button>
+    <button class="history-menu-item" id="historyMenuPin" type="button" role="menuitem">
+      <span class="history-menu-icon" id="historyMenuPinIcon" aria-hidden="true">📌</span>
+      <span id="historyMenuPinText">Pin</span>
+    </button>
+    <button class="history-menu-item danger" id="historyMenuDelete" type="button" role="menuitem">
+      <span class="history-menu-icon" aria-hidden="true">🗑️</span>
+      <span>Delete</span>
+    </button>
+  </div>
+
+  <!-- Delete Conversation Confirmation Modal -->
+  <div id="deleteModal" class="modal-backdrop" hidden>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+      <div class="modal-header">
+        <h3 id="deleteModalTitle" class="modal-title">Delete conversation?</h3>
+      </div>
+      <div class="modal-body">
+        <p class="modal-text">This will delete this conversation and all its messages. This action cannot be undone.</p>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelDeleteBtn" class="modal-btn secondary" type="button">Cancel</button>
+        <button id="confirmDeleteBtn" class="modal-btn danger" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+<script src="./chatbot.js?v=20261021_5" defer></script>
 </body>
 </html>

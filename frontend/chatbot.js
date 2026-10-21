@@ -48,6 +48,17 @@ const chartOutput = document.getElementById("chartOutput");
 const copySQLButton = document.getElementById("copySQLButton");
 const newChatButton = document.getElementById("newChatButton");
 const historyList = document.getElementById("historyList");
+const historyDropdownMenu = document.getElementById("historyDropdownMenu");
+const historyMenuRename = document.getElementById("historyMenuRename");
+const historyMenuPin = document.getElementById("historyMenuPin");
+const historyMenuPinIcon = document.getElementById("historyMenuPinIcon");
+const historyMenuPinText = document.getElementById("historyMenuPinText");
+const historyMenuDelete = document.getElementById("historyMenuDelete");
+
+const deleteModal = document.getElementById("deleteModal");
+const cancelDeleteBtn = document.getElementById("cancelDeleteBtn");
+const confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
+const inlineChangeFileButton = document.getElementById("inlineChangeFileButton");
 
 // ============================================
 // 3. Application state
@@ -59,6 +70,11 @@ let selectedDatasetFile = null;
 let currentDatasetId = null;
 let currentDatasetName = "";
 let isLoading = false;
+let pendingCustomClarification = null; // { conversationId, originalQuestion, optionsContainer }
+let activeMenuConvId = null;
+let activeMenuTrigger = null;
+let pendingDeleteConvId = null;
+let renamingConvId = null;
 
 // ============================================
 // 4. Helper functions
@@ -76,6 +92,42 @@ function createElement(tag, className = "", text = "") {
     }
 
     return element;
+}
+
+function scrollMessagesToBottom(smooth = true) {
+    if (!messages) return;
+    try {
+        messages.scrollTo({
+            top: messages.scrollHeight,
+            behavior: smooth ? "smooth" : "auto"
+        });
+    } catch {
+        messages.scrollTop = messages.scrollHeight;
+    }
+}
+
+function updateDatasetFormState() {
+    if (!uploadForm) return;
+    const isWelcome = Boolean(welcome && !welcome.hidden);
+    const hasActiveDataset = Boolean(currentDatasetId && !isWelcome);
+
+    if (hasActiveDataset) {
+        uploadForm.classList.add("dataset-active");
+        if (questionHint) {
+            questionHint.textContent = "Ask a question about your dataset in plain English.";
+        }
+        if (inlineChangeFileButton) {
+            inlineChangeFileButton.hidden = false;
+        }
+    } else {
+        uploadForm.classList.remove("dataset-active");
+        if (questionHint) {
+            questionHint.textContent = "Upload a dataset to begin your analysis.";
+        }
+        if (inlineChangeFileButton) {
+            inlineChangeFileButton.hidden = true;
+        }
+    }
 }
 
 function formatFileSize(bytes) {
@@ -166,13 +218,70 @@ function addMessage(role, text, isError = false) {
 
     message.append(label, bubble);
     messages.appendChild(message);
-
-    message.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest"
-    });
+    scrollMessagesToBottom(true);
 
     return message;
+}
+
+function renderClarificationOptions(messageElement, options, originalQuestion, isAnswered = false, selectedValue = null, hasResolutionSql = false) {
+    if (!options || !options.length) return;
+
+    const container = createElement("div", "clarification-options");
+    container.setAttribute("role", "group");
+    container.setAttribute("aria-label", "Clarification options");
+
+    options.forEach(opt => {
+        const btn = createElement("button", "clarification-pill", opt.label);
+        btn.type = "button";
+        btn.dataset.optionId = opt.id;
+        btn.dataset.optionLabel = opt.label;
+
+        if (isAnswered) {
+            btn.disabled = true;
+            if (selectedValue && (selectedValue === opt.id || selectedValue.toLowerCase() === opt.label.toLowerCase())) {
+                btn.classList.add("selected");
+            }
+        } else {
+            btn.addEventListener("click", () => {
+                if (isLoading) return;
+                btn.classList.add("selected");
+                container.querySelectorAll("button").forEach(b => b.disabled = true);
+                pendingCustomClarification = null;
+                questionInput.placeholder = "Ask a question about your dataset in plain English...";
+                submitClarification(originalQuestion, opt.id, opt.label);
+            });
+        }
+        container.appendChild(btn);
+    });
+
+    // "Other…" option for custom typing
+    const otherBtn = createElement("button", "clarification-pill other-pill", "Other…");
+    otherBtn.type = "button";
+    if (isAnswered) {
+        otherBtn.disabled = true;
+        if (selectedValue && hasResolutionSql && !options.some(o => o.id === selectedValue || o.label.toLowerCase() === selectedValue.toLowerCase())) {
+            otherBtn.classList.add("selected");
+        }
+    } else {
+        otherBtn.addEventListener("click", () => {
+            if (isLoading) return;
+            container.querySelectorAll(".clarification-pill").forEach(b => b.classList.remove("selected"));
+            otherBtn.classList.add("selected");
+            pendingCustomClarification = {
+                conversationId: activeConversationId,
+                originalQuestion: originalQuestion,
+                optionsContainer: container
+            };
+            const shortQ = originalQuestion.length > 35 ? originalQuestion.slice(0, 35) + "..." : originalQuestion;
+            questionInput.placeholder = `Type your clarification for: "${shortQ}"`;
+            questionInput.focus();
+            questionInput.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+    }
+    container.appendChild(otherBtn);
+
+    messageElement.appendChild(container);
+    scrollMessagesToBottom(true);
 }
 
 // ============================================
@@ -386,33 +495,398 @@ function renderConversationsList() {
         return;
     }
 
-    conversationsList.forEach(conv => {
-        const entry = createElement("div", "history-entry");
-        if (conv.id === activeConversationId) {
-            entry.classList.add("active");
-        }
+    const pinnedConvs = conversationsList.filter(c => c.is_pinned);
+    const unpinnedConvs = conversationsList.filter(c => !c.is_pinned);
 
-        const titleText = conv.title || "New conversation";
-        const question = createElement("p", "history-question", titleText);
-        entry.title = titleText;
+    if (pinnedConvs.length > 0) {
+        const pinnedHeader = createElement("div", "history-group-header");
+        pinnedHeader.appendChild(createElement("p", "history-group-label", "Pinned"));
+        historyList.appendChild(pinnedHeader);
 
-        const time = createElement(
-            "small",
-            "history-time",
-            formatConversationDate(conv.updated_at || conv.created_at)
-        );
-
-        entry.append(question, time);
-
-        entry.addEventListener("click", () => {
-            if (isLoading) return;
-            if (conv.id === activeConversationId) return;
-            loadConversation(conv.id);
+        pinnedConvs.forEach(conv => {
+            historyList.appendChild(createConversationEntryElement(conv));
         });
 
-        historyList.appendChild(entry);
+        if (unpinnedConvs.length > 0) {
+            const recentHeader = createElement("div", "history-group-header");
+            recentHeader.appendChild(createElement("p", "history-group-label", "Recent"));
+            historyList.appendChild(recentHeader);
+
+            unpinnedConvs.forEach(conv => {
+                historyList.appendChild(createConversationEntryElement(conv));
+            });
+        }
+    } else {
+        conversationsList.forEach(conv => {
+            historyList.appendChild(createConversationEntryElement(conv));
+        });
+    }
+}
+
+function createConversationEntryElement(conv) {
+    const entry = createElement("div", "history-entry");
+    entry.dataset.id = conv.id;
+    if (conv.id === activeConversationId) {
+        entry.classList.add("active");
+    }
+
+    // Rename mode
+    if (renamingConvId === conv.id) {
+        const renameForm = createElement("form", "history-rename-form");
+        const renameInput = createElement("input", "history-rename-input");
+        renameInput.type = "text";
+        renameInput.value = conv.title || "New conversation";
+        renameInput.maxLength = 100;
+        renameInput.setAttribute("aria-label", "Rename conversation");
+
+        const actions = createElement("div", "history-rename-actions");
+        const confirmBtn = createElement("button", "history-rename-btn confirm", "✓");
+        confirmBtn.type = "submit";
+        confirmBtn.title = "Save title";
+        confirmBtn.setAttribute("aria-label", "Save title");
+
+        const cancelBtn = createElement("button", "history-rename-btn cancel", "✕");
+        cancelBtn.type = "button";
+        cancelBtn.title = "Cancel";
+        cancelBtn.setAttribute("aria-label", "Cancel renaming");
+
+        actions.append(confirmBtn, cancelBtn);
+        renameForm.append(renameInput, actions);
+
+        renameForm.addEventListener("click", e => e.stopPropagation());
+        renameForm.addEventListener("submit", async e => {
+            e.preventDefault();
+            e.stopPropagation();
+            await renameConversation(conv.id, renameInput.value);
+        });
+
+        cancelBtn.addEventListener("click", e => {
+            e.stopPropagation();
+            renamingConvId = null;
+            renderConversationsList();
+        });
+
+        renameInput.addEventListener("keydown", e => {
+            if (e.key === "Escape") {
+                e.stopPropagation();
+                renamingConvId = null;
+                renderConversationsList();
+            }
+        });
+
+        entry.appendChild(renameForm);
+        setTimeout(() => {
+            renameInput.focus();
+            renameInput.select();
+        }, 20);
+
+        return entry;
+    }
+
+    // Normal display mode
+    const content = createElement("div", "history-entry-content");
+    const titleRow = createElement("div", "history-title-row");
+
+    if (conv.is_pinned) {
+        const pinBadge = createElement("span", "history-pin-badge", "📌");
+        pinBadge.title = "Pinned";
+        pinBadge.setAttribute("aria-hidden", "true");
+        titleRow.appendChild(pinBadge);
+    }
+
+    const titleText = conv.title || "New conversation";
+    const question = createElement("p", "history-question", titleText);
+    titleRow.appendChild(question);
+
+    const time = createElement(
+        "small",
+        "history-time",
+        formatConversationDate(conv.updated_at || conv.created_at)
+    );
+
+    content.append(titleRow, time);
+    entry.title = titleText;
+
+    // Three-dot action button
+    const trigger = createElement("button", "history-menu-trigger");
+    trigger.type = "button";
+    trigger.setAttribute("aria-label", `Options for ${titleText}`);
+    trigger.setAttribute("aria-haspopup", "true");
+    trigger.title = "Options";
+    trigger.innerHTML = "<span>⋮</span>";
+
+    if (activeMenuConvId === conv.id) {
+        trigger.classList.add("active");
+    }
+
+    trigger.addEventListener("click", e => {
+        e.stopPropagation();
+        toggleHistoryDropdown(conv, trigger);
+    });
+
+    entry.append(content, trigger);
+
+    entry.addEventListener("click", () => {
+        if (isLoading) return;
+        if (conv.id === activeConversationId) return;
+        loadConversation(conv.id);
+    });
+
+    return entry;
+}
+
+function toggleHistoryDropdown(conv, trigger) {
+    if (activeMenuConvId === conv.id && historyDropdownMenu && !historyDropdownMenu.hidden) {
+        closeHistoryDropdown();
+        return;
+    }
+
+    closeHistoryDropdown();
+
+    activeMenuConvId = conv.id;
+    activeMenuTrigger = trigger;
+    trigger.classList.add("active");
+
+    if (historyMenuPinText) {
+        historyMenuPinText.textContent = conv.is_pinned ? "Unpin" : "Pin";
+    }
+
+    if (!historyDropdownMenu) return;
+    historyDropdownMenu.hidden = false;
+
+    // Dynamic viewport positioning to prevent clipping by sidebar scroll container
+    const rect = trigger.getBoundingClientRect();
+    const menuWidth = 145;
+    const menuHeight = historyDropdownMenu.offsetHeight || 125;
+
+    let top = rect.bottom + 4;
+    let left = rect.right - menuWidth;
+
+    // Flip above if overflowing bottom
+    if (top + menuHeight > window.innerHeight - 8) {
+        top = rect.top - menuHeight - 4;
+    }
+
+    // Clamp strictly within viewport bounds
+    if (top < 8) top = 8;
+    if (top + menuHeight > window.innerHeight - 8) {
+        top = Math.max(8, window.innerHeight - menuHeight - 8);
+    }
+
+    if (left < 8) left = 8;
+    if (left + menuWidth > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - menuWidth - 8);
+    }
+
+    historyDropdownMenu.style.top = `${top}px`;
+    historyDropdownMenu.style.left = `${left}px`;
+}
+
+function closeHistoryDropdown() {
+    if (!historyDropdownMenu) return;
+    historyDropdownMenu.hidden = true;
+    if (activeMenuTrigger) {
+        activeMenuTrigger.classList.remove("active");
+        activeMenuTrigger = null;
+    }
+    activeMenuConvId = null;
+}
+
+async function renameConversation(convId, newTitle) {
+    const trimmed = (newTitle || "").trim();
+    if (!trimmed) {
+        renamingConvId = null;
+        renderConversationsList();
+        return;
+    }
+
+    const conv = conversationsList.find(c => c.id === convId);
+    if (!conv) return;
+
+    if (conv.title === trimmed) {
+        renamingConvId = null;
+        renderConversationsList();
+        return;
+    }
+
+    try {
+        const response = await fetch(`${CONVERSATIONS_URL}/${convId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: trimmed })
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || "Failed to rename conversation");
+        }
+        const updated = await response.json();
+        conv.title = updated.title || trimmed;
+        conv.is_custom_title = true;
+        conv.updated_at = updated.updated_at || conv.updated_at;
+    } catch (err) {
+        console.error("Failed to rename conversation:", err);
+        alert("Could not rename conversation: " + (err.message || err));
+    } finally {
+        renamingConvId = null;
+        renderConversationsList();
+    }
+}
+
+async function togglePinConversation(convId) {
+    const conv = conversationsList.find(c => c.id === convId);
+    if (!conv) return;
+
+    const newPinnedState = !conv.is_pinned;
+
+    try {
+        const response = await fetch(`${CONVERSATIONS_URL}/${convId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ is_pinned: newPinnedState })
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || "Failed to update pin state");
+        }
+        conv.is_pinned = newPinnedState;
+        conversationsList.sort((a, b) => {
+            if (Boolean(b.is_pinned) !== Boolean(a.is_pinned)) {
+                return (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0);
+            }
+            return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
+        });
+        renderConversationsList();
+    } catch (err) {
+        console.error("Failed to pin/unpin conversation:", err);
+        alert("Could not update pin state: " + (err.message || err));
+    }
+}
+
+function openDeleteModal(convId) {
+    pendingDeleteConvId = convId;
+    if (deleteModal) {
+        deleteModal.hidden = false;
+        if (confirmDeleteBtn) confirmDeleteBtn.disabled = false;
+        if (cancelDeleteBtn) cancelDeleteBtn.focus();
+    }
+}
+
+function closeDeleteModal() {
+    if (deleteModal) {
+        deleteModal.hidden = true;
+    }
+    pendingDeleteConvId = null;
+}
+
+async function confirmDeleteConversation() {
+    if (!pendingDeleteConvId) return;
+    const convId = pendingDeleteConvId;
+
+    try {
+        if (confirmDeleteBtn) confirmDeleteBtn.disabled = true;
+        const response = await fetch(`${CONVERSATIONS_URL}/${convId}`, {
+            method: "DELETE"
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || "Failed to delete conversation");
+        }
+
+        conversationsList = conversationsList.filter(c => c.id !== convId);
+        closeDeleteModal();
+
+        if (convId === activeConversationId) {
+            activeConversationId = null;
+            try {
+                localStorage.removeItem("clarify_active_conv_id");
+            } catch {}
+
+            if (conversationsList.length > 0) {
+                await loadConversation(conversationsList[0].id);
+            } else {
+                await startNewConversation();
+            }
+        } else {
+            renderConversationsList();
+        }
+    } catch (err) {
+        console.error("Delete conversation failed:", err);
+        alert("Could not delete conversation: " + (err.message || err));
+    } finally {
+        if (confirmDeleteBtn) confirmDeleteBtn.disabled = false;
+    }
+}
+
+// Attach menu & modal handlers once
+if (historyMenuRename) {
+    historyMenuRename.addEventListener("click", () => {
+        const convId = activeMenuConvId;
+        closeHistoryDropdown();
+        if (convId) {
+            renamingConvId = convId;
+            renderConversationsList();
+        }
     });
 }
+
+if (historyMenuPin) {
+    historyMenuPin.addEventListener("click", () => {
+        const convId = activeMenuConvId;
+        closeHistoryDropdown();
+        if (convId) {
+            togglePinConversation(convId);
+        }
+    });
+}
+
+if (historyMenuDelete) {
+    historyMenuDelete.addEventListener("click", () => {
+        const convId = activeMenuConvId;
+        closeHistoryDropdown();
+        if (convId) {
+            openDeleteModal(convId);
+        }
+    });
+}
+
+if (cancelDeleteBtn) {
+    cancelDeleteBtn.addEventListener("click", closeDeleteModal);
+}
+
+if (confirmDeleteBtn) {
+    confirmDeleteBtn.addEventListener("click", confirmDeleteConversation);
+}
+
+if (deleteModal) {
+    deleteModal.addEventListener("click", e => {
+        if (e.target === deleteModal) closeDeleteModal();
+    });
+}
+
+// Global dismiss listeners
+document.addEventListener("pointerdown", e => {
+    if (historyDropdownMenu && !historyDropdownMenu.hidden) {
+        if (!historyDropdownMenu.contains(e.target) && !e.target.closest(".history-menu-trigger")) {
+            closeHistoryDropdown();
+        }
+    }
+});
+
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+        if (historyDropdownMenu && !historyDropdownMenu.hidden) {
+            closeHistoryDropdown();
+        } else if (deleteModal && !deleteModal.hidden) {
+            closeDeleteModal();
+        }
+    }
+});
+
+window.addEventListener("scroll", () => {
+    if (historyDropdownMenu && !historyDropdownMenu.hidden) {
+        closeHistoryDropdown();
+    }
+}, true);
 
 async function createConversation(title = "New conversation", datasetId = null, datasetName = null) {
     try {
@@ -477,7 +951,9 @@ async function loadConversation(conversationId) {
         resetResults();
         showFormMessage("", false);
         questionInput.value = "";
+        questionInput.placeholder = "Ask a question about your dataset in plain English...";
         setSelectedFile(null);
+        pendingCustomClarification = null;
 
         // Restore dataset state
         if (conv.dataset_id) {
@@ -509,8 +985,15 @@ async function loadConversation(conversationId) {
             welcome.hidden = true;
             let lastResultMsg = null;
 
-            conv.messages.forEach(msg => {
-                addMessage(msg.role, msg.content, msg.is_error);
+            conv.messages.forEach((msg, idx) => {
+                const msgEl = addMessage(msg.role, msg.content, msg.is_error);
+                if (msg.clarification_options && Array.isArray(msg.clarification_options) && msg.clarification_options.length > 0) {
+                    const hasSubsequent = idx < conv.messages.length - 1;
+                    const originalQ = (idx > 0 && conv.messages[idx - 1].role === "user") ? conv.messages[idx - 1].content : "";
+                    const nextUserMsg = (hasSubsequent && conv.messages[idx + 1].role === "user") ? conv.messages[idx + 1].content : null;
+                    const hasResolutionSql = Boolean(idx + 2 < conv.messages.length && conv.messages[idx + 2].sql);
+                    renderClarificationOptions(msgEl, msg.clarification_options, originalQ, hasSubsequent, nextUserMsg, hasResolutionSql);
+                }
                 if (msg.sql || (msg.rows && msg.rows.length)) {
                     lastResultMsg = msg;
                 }
@@ -532,12 +1015,14 @@ async function loadConversation(conversationId) {
         }
 
         renderConversationsList();
-        conversationArea.scrollTop = conversationArea.scrollHeight;
+        updateDatasetFormState();
+        scrollMessagesToBottom(false);
     } catch (err) {
         console.error("Failed to load conversation:", err);
         showFormMessage("Could not load conversation: " + (err.message || err));
     } finally {
         setLoading(false);
+        updateDatasetFormState();
         questionInput.focus();
     }
 }
@@ -556,8 +1041,10 @@ async function startNewConversation() {
             setSelectedFile(null);
             currentDatasetId = null;
             currentDatasetName = "";
+            pendingCustomClarification = null;
             questionInput.value = "";
             questionInput.placeholder = "Ask a question about your dataset in plain English...";
+            updateDatasetFormState();
             questionInput.focus();
             return;
         }
@@ -579,6 +1066,7 @@ async function startNewConversation() {
         setSelectedFile(null);
         currentDatasetId = null;
         currentDatasetName = "";
+        pendingCustomClarification = null;
         questionInput.value = "";
         questionInput.placeholder = "Ask a question about your dataset in plain English...";
         showFormMessage("", false);
@@ -589,6 +1077,7 @@ async function startNewConversation() {
         showFormMessage("Could not create new conversation: " + (err.message || err));
     } finally {
         setLoading(false);
+        updateDatasetFormState();
         questionInput.focus();
     }
 }
@@ -823,6 +1312,7 @@ function updateSQL(sql, status = "READY") {
 
 function showConversation() {
     welcome.hidden = true;
+    updateDatasetFormState();
 }
 
 function resetResults() {
@@ -913,8 +1403,11 @@ async function askQuestion(question) {
         }
 
         if (data.clarification) {
-            addMessage("assistant", data.clarification);
-            questionInput.placeholder = "Please clarify your question...";
+            const msgEl = addMessage("assistant", data.clarification);
+            if (Array.isArray(data.options) && data.options.length) {
+                renderClarificationOptions(msgEl, data.options, cleanQuestion, false, null);
+            }
+            questionInput.placeholder = "Select an option above or click 'Other…' to type...";
             questionInput.focus();
             await fetchConversations();
             return;
@@ -961,7 +1454,118 @@ async function askQuestion(question) {
     } finally {
         setLoading(false);
         questionInput.focus();
-        conversationArea.scrollTop = conversationArea.scrollHeight;
+        scrollMessagesToBottom(true);
+    }
+}
+
+async function submitClarification(originalQuestion, optionId, optionLabel) {
+    if (!currentDatasetId || isLoading) return;
+
+    if (!activeConversationId) {
+        const newConv = await createConversation(originalQuestion.slice(0, 50), currentDatasetId, currentDatasetName);
+        activeConversationId = newConv.id;
+        try {
+            localStorage.setItem("clarify_active_conv_id", newConv.id);
+        } catch {}
+    }
+
+    const currentConvId = activeConversationId;
+    showConversation();
+    addMessage("user", optionLabel);
+
+    questionInput.value = "";
+    questionInput.placeholder = "Ask a question about your dataset in plain English...";
+    showFormMessage("", false);
+    resetResults();
+
+    setLoading(true, "Applying your clarification...");
+
+    const loadingMessage = addMessage(
+        "assistant",
+        "Understanding your selection and generating SQL..."
+    );
+
+    try {
+        console.log("Sending clarification query to:", QUERY_URL);
+
+        const response = await fetch(QUERY_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                dataset_id: currentDatasetId,
+                question: optionLabel,
+                conversation_id: currentConvId,
+                original_question: originalQuestion,
+                selected_option_id: optionId,
+                selected_option_label: optionLabel
+            })
+        });
+
+        const data = await readResponse(response);
+        console.log("Clarification API response:", data);
+
+        loadingMessage.remove();
+
+        if (activeConversationId !== currentConvId) {
+            await fetchConversations();
+            return;
+        }
+
+        if (data.clarification) {
+            const msgEl = addMessage("assistant", data.clarification);
+            if (Array.isArray(data.options) && data.options.length) {
+                renderClarificationOptions(msgEl, data.options, originalQuestion, false, null);
+            }
+            questionInput.placeholder = "Select an option above or click 'Other…' to type...";
+            questionInput.focus();
+            await fetchConversations();
+            return;
+        }
+
+        addMessage(
+            "assistant",
+            data.answer ||
+            data.explanation ||
+            data.message ||
+            "Your query has been processed."
+        );
+
+        responseDetails.hidden = false;
+
+        const sql = data.sql || data.query || "";
+        updateSQL(sql, sql ? "READY" : "WAITING");
+
+        renderResults({
+            columns: data.columns || [],
+            rows: data.rows || data.results || [],
+            message: data.message
+        });
+
+        renderChart(data.chart || data.chart_url || null);
+
+        await fetchConversations();
+    } catch (error) {
+        loadingMessage.remove();
+        console.error("ClarifySQL clarification failed:", error.message || error);
+
+        if (activeConversationId === currentConvId) {
+            addMessage(
+                "assistant",
+                error instanceof TypeError
+                    ? "I couldn't connect to the Python backend. Make sure the API is running and the frontend endpoint is correct."
+                    : error.message ||
+                      "Something went wrong while processing your clarification.",
+                true
+            );
+        }
+
+        await fetchConversations();
+    } finally {
+        setLoading(false);
+        questionInput.focus();
+        scrollMessagesToBottom(true);
     }
 }
 
@@ -1005,6 +1609,7 @@ async function handleSubmission(event) {
             );
 
             showConversation();
+            updateDatasetFormState();
 
             const readyText = `Your dataset "${data.filename || currentDatasetName}" is ready.`;
             addMessage("assistant", readyText);
@@ -1048,6 +1653,24 @@ async function handleSubmission(event) {
     }
 
     if (currentDatasetId) {
+        if (pendingCustomClarification && pendingCustomClarification.conversationId === activeConversationId) {
+            const customClarification = question.trim();
+            if (!customClarification) {
+                showFormMessage("Please type your clarification.");
+                questionInput.focus();
+                return;
+            }
+            const origQ = pendingCustomClarification.originalQuestion;
+            const container = pendingCustomClarification.optionsContainer;
+            if (container) {
+                container.querySelectorAll("button").forEach(b => b.disabled = true);
+            }
+            pendingCustomClarification = null;
+            questionInput.placeholder = "Ask a question about your dataset in plain English...";
+            await submitClarification(origQ, "other", customClarification);
+            return;
+        }
+
         if (!question) {
             showFormMessage("Please enter a question about your dataset.");
             questionInput.focus();
@@ -1085,6 +1708,14 @@ changeFileButton.addEventListener("click", () => {
         fileInput.click();
     }
 });
+
+if (inlineChangeFileButton) {
+    inlineChangeFileButton.addEventListener("click", () => {
+        if (!isLoading) {
+            fileInput.click();
+        }
+    });
+}
 
 uploadZone.addEventListener("dragover", event => {
     event.preventDefault();
@@ -1203,6 +1834,7 @@ async function initClarifySQL() {
         await startNewConversation();
     }
 
+    updateDatasetFormState();
     console.log("ClarifySQL persistent history initialized.");
 }
 
