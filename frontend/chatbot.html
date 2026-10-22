@@ -73,9 +73,15 @@
 
       <div class="sidebar-section">
         <p class="sidebar-label">WORKSPACE</p>
-        <div class="workspace-item active">
+        <a class="workspace-item active" href="chatbot.html">
           <span>▦</span> Data analysis
-        </div>
+        </a>
+        <a id="sidebarVisualizationsLink" class="workspace-item" href="visualization.html" title="Open Visualizations">
+          <svg class="workspace-icon" viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+            <path d="M3 17V10M8 17V4M13 17V8M18 17V13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Visualizations</span>
+        </a>
       </div>
 
       <div class="sidebar-section history-section">
@@ -97,9 +103,17 @@
           <p class="eyebrow">YOUR PERSONAL DATA ASSISTANT</p>
           <h1>Data workspace</h1>
         </div>
-        <div class="topbar-status">
-          <span class="status-dot"></span>
-          Ready to explore
+        <div class="topbar-actions">
+          <a id="topbarVisualizationsBtn" class="topbar-viz-btn" href="visualization.html" title="Open Visualizations">
+            <svg viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+              <path d="M3 17V10M8 17V4M13 17V8M18 17V13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Visualizations</span>
+          </a>
+          <div class="topbar-status">
+            <span class="status-dot"></span>
+            Ready to explore
+          </div>
         </div>
       </header>
 
@@ -239,7 +253,16 @@
                 <h3>Results</h3>
               </div>
 
-              <span id="resultCount" class="result-count"></span>
+              <div class="result-heading-actions">
+                <a id="visualizeResultBtn" class="visualize-result-button" href="visualization.html" hidden>
+                  <svg viewBox="0 0 20 20" fill="none" width="15" height="15" aria-hidden="true">
+                    <path d="M3 17V10M8 17V4M13 17V8M18 17V13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>Visualize result</span>
+                  <span class="arrow" aria-hidden="true">&rarr;</span>
+                </a>
+                <span id="resultCount" class="result-count"></span>
+              </div>
             </div>
 
             <div id="resultsOutput" class="results-output">

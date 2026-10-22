@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClarifySQL | Visualizations</title>
+  <link rel="stylesheet" href="chatbot.css?v=20261022_1">
+  <link rel="stylesheet" href="visualization.css?v=20261022_1">
+  <script>
+    // Prevent external live-reload watchers from resetting active session
+    (function () {
+      const NativeWebSocket = window.WebSocket;
+      if (!NativeWebSocket) return;
+      window.WebSocket = function (url, protocols) {
+        const ws = protocols ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+        if (typeof url === "string" && (url.endsWith("/ws") || url.includes(":5500"))) {
+          return new Proxy(ws, {
+            set(target, prop, value) {
+              if (prop === "onmessage" && typeof value === "function") {
+                target.onmessage = function (event) {
+                  if (event && event.data === "reload") {
+                    console.warn("[ClarifySQL] Live Server reload prevented.");
+                    return;
+                  }
+                  return value.call(this, event);
+                };
+                return true;
+              }
+              target[prop] = value;
+              return true;
+            },
+            get(target, prop) {
+              if (prop === "addEventListener") {
+                return function (type, listener, options) {
+                  if (type === "message" && typeof listener === "function") {
+                    const wrapped = function (event) {
+                      if (event && event.data === "reload") {
+                        console.warn("[ClarifySQL] Live Server reload prevented.");
+                        return;
+                      }
+                      return listener.call(this, event);
+                    };
+                    return target.addEventListener(type, wrapped, options);
+                  }
+                  return target.addEventListener(type, listener, options);
+                };
+              }
+              const val = target[prop];
+              if (typeof val === "function") {
+                return val.bind(target);
+              }
+              return val;
+            }
+          });
+        }
+        return ws;
+      };
+      window.WebSocket.prototype = NativeWebSocket.prototype;
+    })();
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="chatbot.html" id="brandLink">
+        <span class="brand-mark">C</span>
+        <span class="brand-name">Clarify<span>SQL</span></span>
+      </a>
+
+      <div class="sidebar-section">
+        <p class="sidebar-label">WORKSPACE</p>
+        <a id="navChatbotLink" class="workspace-item" href="chatbot.html" title="Return to Data Analysis">
+          <span>▦</span> Data analysis
+        </a>
+        <div class="workspace-item active">
+          <svg class="workspace-icon" viewBox="0 0 20 20" fill="none" width="16" height="16" aria-hidden="true">
+            <path d="M3 17V10M8 17V4M13 17V8M18 17V13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Visualizations</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section history-section">
+        <p class="sidebar-label">CONVERSATIONS</p>
+        <div id="vizHistoryList" class="history-list">
+          <p class="empty-history">Loading conversations...</p>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span>AI analytics workspace</span>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">DATA VISUALIZATION WORKSPACE</p>
+          <h1>Visualizations</h1>
+        </div>
+        <div class="topbar-actions">
+          <div id="datasetBadge" class="dataset-badge" hidden>
+            <span class="badge-icon">▤</span>
+            <span id="datasetBadgeName">Dataset</span>
+          </div>
+          <a id="topbarBackBtn" class="topbar-viz-btn" href="chatbot.html" title="Return to Data Analysis">
+            <span aria-hidden="true">←</span>
+            <span>Back to Chatbot</span>
+          </a>
+        </div>
+      </header>
+
+      <section class="visualization-area">
+
+        <!-- Empty state when no dataset or no query results exist -->
+        <div id="emptyState" class="viz-empty-card" hidden>
+          <div class="empty-icon-wrap">
+            <svg viewBox="0 0 48 48" fill="none" width="48" height="48" aria-hidden="true">
+              <rect x="6" y="8" width="36" height="32" rx="4" stroke="currentColor" stroke-width="3"/>
+              <path d="M14 30V22M22 30V16M30 30V24M38 30V18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h2 id="emptyTitle">No query results to visualize yet</h2>
+          <p id="emptyMessage">
+            Run a question in the chatbot first to generate SQL and query output.
+            Once you have results, they will automatically appear here ready for charting.
+          </p>
+          <div class="empty-actions">
+            <a id="emptyBackBtn" class="send-button" href="chatbot.html">
+              <span>Go to Chatbot</span>
+              <span aria-hidden="true">→</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Main visualization workspace -->
+        <div id="vizWorkspace" class="viz-workspace" hidden>
+
+          <!-- 1. Query selector and context banner -->
+          <div class="viz-card query-context-card">
+            <div class="query-context-header">
+              <div class="query-info-left">
+                <span class="context-pill">QUERY RESULT</span>
+                <h3 id="currentQuestionDisplay">Question will appear here</h3>
+              </div>
+
+              <!-- Selector when multiple queries exist in this conversation -->
+              <div id="querySelectorWrap" class="query-selector-wrap" hidden>
+                <label for="querySelect">Select query:</label>
+                <select id="querySelect" class="form-select"></select>
+              </div>
+            </div>
+
+            <div class="query-sql-bar">
+              <button id="toggleSqlBtn" class="text-button" type="button" aria-expanded="false">
+                <span>View executed SQL</span>
+                <span class="chevron" aria-hidden="true">▼</span>
+              </button>
+              <span id="queryMetaText" class="query-meta-text"></span>
+            </div>
+
+            <div id="sqlCollapsible" class="sql-collapsible" hidden>
+              <pre class="sql-container"><code id="sqlDisplay"></code></pre>
+            </div>
+          </div>
+
+          <!-- 2. Summary KPI Metrics -->
+          <div id="summaryCards" class="summary-cards-grid">
+            <div class="summary-card">
+              <span class="summary-label">Total Records</span>
+              <strong id="summaryRowCount" class="summary-val">—</strong>
+              <small class="summary-sub">Returned by SQL</small>
+            </div>
+
+            <div class="summary-card">
+              <span class="summary-label">Metric Sum</span>
+              <strong id="summarySum" class="summary-val">—</strong>
+              <small id="summarySumLabel" class="summary-sub">Selected metric</small>
+            </div>
+
+            <div class="summary-card">
+              <span class="summary-label">Metric Average</span>
+              <strong id="summaryAvg" class="summary-val">—</strong>
+              <small id="summaryAvgLabel" class="summary-sub">Per record</small>
+            </div>
+
+            <div class="summary-card">
+              <span class="summary-label">Min / Max Range</span>
+              <strong id="summaryRange" class="summary-val">—</strong>
+              <small id="summaryRangeLabel" class="summary-sub">Min to Max</small>
+            </div>
+          </div>
+
+          <!-- 3. Chart Card -->
+          <div class="viz-card chart-card">
+            <div class="chart-toolbar">
+              <div class="chart-type-tabs" role="tablist" aria-label="Chart types">
+                <button type="button" class="chart-type-btn active" data-chart="bar" role="tab" aria-selected="true">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14" aria-hidden="true">
+                    <rect x="2" y="7" width="3" height="7" rx="0.7" fill="currentColor"/>
+                    <rect x="6.5" y="3" width="3" height="11" rx="0.7" fill="currentColor"/>
+                    <rect x="11" y="9" width="3" height="5" rx="0.7" fill="currentColor"/>
+                  </svg>
+                  <span>Bar</span>
+                </button>
+                <button type="button" class="chart-type-btn" data-chart="line" role="tab" aria-selected="false">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14" aria-hidden="true">
+                    <path d="M2 12L6 7L10 10L14 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>Line</span>
+                </button>
+                <button type="button" class="chart-type-btn" data-chart="pie" role="tab" aria-selected="false">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14" aria-hidden="true">
+                    <path d="M8 2A6 6 0 0 0 2 8A6 6 0 0 0 8 14A6 6 0 0 0 14 8A6 6 0 0 0 8 2M8 2V8H14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>Pie</span>
+                </button>
+                <button type="button" class="chart-type-btn" data-chart="doughnut" role="tab" aria-selected="false">
+                  <svg viewBox="0 0 16 16" fill="none" width="14" height="14" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.8"/>
+                    <circle cx="8" cy="8" r="2.8" stroke="currentColor" stroke-width="1.6"/>
+                  </svg>
+                  <span>Doughnut</span>
+                </button>
+              </div>
+
+              <div class="chart-controls">
+                <div class="control-group">
+                  <label for="labelColSelect">Category (X):</label>
+                  <select id="labelColSelect" class="form-select"></select>
+                </div>
+
+                <div class="control-group">
+                  <label for="metricColSelect">Metric (Y):</label>
+                  <select id="metricColSelect" class="form-select"></select>
+                </div>
+
+                <div class="control-group">
+                  <label for="sortSelect">Sort:</label>
+                  <select id="sortSelect" class="form-select">
+                    <option value="none">Original</option>
+                    <option value="desc" selected>Value (High to Low)</option>
+                    <option value="asc">Value (Low to High)</option>
+                    <option value="alpha">Label (A to Z)</option>
+                  </select>
+                </div>
+
+                <div class="control-group">
+                  <label for="limitSelect">Show:</label>
+                  <select id="limitSelect" class="form-select">
+                    <option value="10">Top 10</option>
+                    <option value="20" selected>Top 20</option>
+                    <option value="50">Top 50</option>
+                    <option value="all">All rows</option>
+                  </select>
+                </div>
+
+                <button id="downloadChartBtn" class="text-button export-btn" type="button" title="Download chart as PNG image">
+                  <span>↓ Export PNG</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Unsuitable data notice (shown when no numeric columns exist or 0 rows) -->
+            <div id="unsuitableNotice" class="unsuitable-notice" hidden>
+              <div class="notice-icon">ℹ</div>
+              <div class="notice-content">
+                <strong id="unsuitableTitle">Notice</strong>
+                <p id="unsuitableDesc">This query result cannot be charted.</p>
+              </div>
+            </div>
+
+            <!-- Chart canvas container -->
+            <div id="canvasContainer" class="canvas-container">
+              <canvas id="vizCanvas"></canvas>
+            </div>
+          </div>
+
+          <!-- 4. Underlying Data Inspector -->
+          <div class="viz-card data-inspector-card">
+            <div class="inspector-header">
+              <div>
+                <p class="eyebrow">QUERY OUTPUT</p>
+                <h3>Underlying data table</h3>
+              </div>
+
+              <div class="inspector-actions">
+                <input id="tableSearchInput" class="table-search-input" type="search" placeholder="Filter rows...">
+                <button id="copyTableBtn" class="text-button" type="button">Copy data</button>
+              </div>
+            </div>
+
+            <div id="inspectorTableWrap" class="preview-wrap inspector-table-wrap">
+              <table id="inspectorTable" class="result-table">
+                <thead id="inspectorTableHead"></thead>
+                <tbody id="inspectorTableBody"></tbody>
+              </table>
+            </div>
+
+            <div class="inspector-footer">
+              <span id="inspectorRowSummary" class="muted-text">Showing 0 rows</span>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+      <footer class="main-footer">
+        <span>ClarifySQL Visualizations</span>
+        <span>Ask questions. Understand your data visually.</span>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Conversation Actions Floating Dropdown Menu -->
+  <div id="historyDropdownMenu" class="history-dropdown-menu" role="menu" hidden>
+    <button class="history-menu-item" id="historyMenuRename" type="button" role="menuitem">
+      <span class="history-menu-icon" aria-hidden="true">✏️</span>
+      <span>Rename</span>
+    </button>
+    <button class="history-menu-item" id="historyMenuPin" type="button" role="menuitem">
+      <span class="history-menu-icon" id="historyMenuPinIcon" aria-hidden="true">📌</span>
+      <span id="historyMenuPinText">Pin</span>
+    </button>
+    <button class="history-menu-item danger" id="historyMenuDelete" type="button" role="menuitem">
+      <span class="history-menu-icon" aria-hidden="true">🗑️</span>
+      <span>Delete</span>
+    </button>
+  </div>
+
+  <!-- Delete Conversation Confirmation Modal -->
+  <div id="deleteModal" class="modal-backdrop" hidden>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+      <div class="modal-header">
+        <h3 id="deleteModalTitle" class="modal-title">Delete conversation?</h3>
+      </div>
+      <div class="modal-body">
+        <p class="modal-text">This will delete this conversation and all its messages. This action cannot be undone.</p>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelDeleteBtn" class="modal-btn secondary" type="button">Cancel</button>
+        <button id="confirmDeleteBtn" class="modal-btn danger" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local Chart.js fallback, and remote CDN if needed -->
+  <script src="chart.min.js"></script>
+  <script>
+    if (typeof Chart === "undefined") {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js"><\/script>');
+    }
+  </script>
+  <script src="visualization.js?v=20261022_1" defer></script>
+</body>
+</html>

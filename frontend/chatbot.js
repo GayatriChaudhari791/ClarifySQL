@@ -9,6 +9,9 @@ const UPLOAD_URL = `${API_BASE}/upload`;
 const QUERY_URL = `${API_BASE}/query`;
 const CONVERSATIONS_URL = `${API_BASE}/conversations`;
 
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+
 // ============================================
 // 2. HTML elements
 // ============================================
@@ -59,6 +62,9 @@ const deleteModal = document.getElementById("deleteModal");
 const cancelDeleteBtn = document.getElementById("cancelDeleteBtn");
 const confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
 const inlineChangeFileButton = document.getElementById("inlineChangeFileButton");
+const sidebarVisualizationsLink = document.getElementById("sidebarVisualizationsLink");
+const topbarVisualizationsBtn = document.getElementById("topbarVisualizationsBtn");
+const visualizeResultBtn = document.getElementById("visualizeResultBtn");
 
 // ============================================
 // 3. Application state
@@ -75,6 +81,56 @@ let activeMenuConvId = null;
 let activeMenuTrigger = null;
 let pendingDeleteConvId = null;
 let renamingConvId = null;
+let lastResultMsgId = null;
+let lastResultData = null; // { columns, rows, sql, question }
+
+function updateVisualizationLinks() {
+    const params = new URLSearchParams();
+    if (activeConversationId) {
+        params.set("conv_id", activeConversationId);
+    }
+    if (currentDatasetId) {
+        params.set("dataset_id", currentDatasetId);
+    }
+    if (lastResultMsgId) {
+        params.set("msg_id", String(lastResultMsgId));
+    }
+
+    const queryStr = params.toString();
+    const vizUrl = "visualization.html" + (queryStr ? `?${queryStr}` : "");
+
+    if (sidebarVisualizationsLink) {
+        sidebarVisualizationsLink.href = vizUrl;
+    }
+    if (topbarVisualizationsBtn) {
+        topbarVisualizationsBtn.href = vizUrl;
+    }
+
+    if (visualizeResultBtn) {
+        const hasUsableRows = Boolean(
+            lastResultData &&
+            Array.isArray(lastResultData.rows) &&
+            lastResultData.rows.length > 0
+        );
+        visualizeResultBtn.hidden = !hasUsableRows;
+        visualizeResultBtn.href = vizUrl;
+    }
+
+    if (lastResultData && lastResultData.rows && lastResultData.rows.length > 0) {
+        try {
+            sessionStorage.setItem("clarify_active_viz", JSON.stringify({
+                conversation_id: activeConversationId,
+                dataset_id: currentDatasetId,
+                dataset_name: currentDatasetName,
+                message_id: lastResultMsgId,
+                columns: lastResultData.columns || [],
+                rows: lastResultData.rows || [],
+                sql: lastResultData.sql || "",
+                question: lastResultData.question || ""
+            }));
+        } catch {}
+    }
+}
 
 // ============================================
 // 4. Helper functions
@@ -313,13 +369,13 @@ function setSelectedFile(file) {
         return;
     }
 
-    if (file.size > 20 * 1024 * 1024) {
+    if (file.size > MAX_UPLOAD_BYTES) {
         selectedDatasetFile = null;
         fileInput.value = "";
         selectedFile.hidden = true;
 
         showFormMessage(
-            "The file is too large. Please choose a file under 20 MB."
+            `The file is too large. Please choose a file under ${MAX_UPLOAD_MB} MB.`
         );
 
         return;
@@ -1009,6 +1065,14 @@ async function loadConversation(conversationId) {
                     rows: lastResultMsg.rows || []
                 });
                 renderChart(lastResultMsg.chart || null);
+                lastResultMsgId = lastResultMsg.id || null;
+                lastResultData = {
+                    columns: lastResultMsg.columns || [],
+                    rows: lastResultMsg.rows || [],
+                    sql: lastResultMsg.sql || "",
+                    question: ""
+                };
+                updateVisualizationLinks();
             } else {
                 resetResults();
             }
@@ -1334,6 +1398,9 @@ function resetResults() {
 
     chartOutput.replaceChildren();
     chartSection.hidden = true;
+    lastResultMsgId = null;
+    lastResultData = null;
+    updateVisualizationLinks();
 }
 
 // ============================================
@@ -1433,6 +1500,15 @@ async function askQuestion(question) {
         });
 
         renderChart(data.chart || data.chart_url || null);
+
+        lastResultMsgId = data.message_id || null;
+        lastResultData = {
+            columns: data.columns || [],
+            rows: data.rows || data.results || [],
+            sql: data.sql || data.query || "",
+            question: cleanQuestion
+        };
+        updateVisualizationLinks();
 
         await fetchConversations();
     } catch (error) {
@@ -1544,6 +1620,15 @@ async function submitClarification(originalQuestion, optionId, optionLabel) {
         });
 
         renderChart(data.chart || data.chart_url || null);
+
+        lastResultMsgId = data.message_id || null;
+        lastResultData = {
+            columns: data.columns || [],
+            rows: data.rows || data.results || [],
+            sql: data.sql || data.query || "",
+            question: `${originalQuestion} (${optionLabel})`
+        };
+        updateVisualizationLinks();
 
         await fetchConversations();
     } catch (error) {
@@ -1821,10 +1906,15 @@ async function initClarifySQL() {
     resetResults();
     await fetchConversations();
 
-    let targetConvId = null;
-    try {
-        targetConvId = localStorage.getItem("clarify_active_conv_id");
-    } catch {}
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlConvId = urlParams.get("conv_id");
+
+    let targetConvId = urlConvId || null;
+    if (!targetConvId) {
+        try {
+            targetConvId = localStorage.getItem("clarify_active_conv_id");
+        } catch {}
+    }
 
     if (targetConvId && conversationsList.some(c => c.id === targetConvId)) {
         await loadConversation(targetConvId);
@@ -1835,6 +1925,7 @@ async function initClarifySQL() {
     }
 
     updateDatasetFormState();
+    updateVisualizationLinks();
     console.log("ClarifySQL persistent history initialized.");
 }
 
